@@ -1,24 +1,26 @@
 # Cause of Death
 
-A Python desktop/localhost crime-solving prototype.
+A Python desktop crime-solving game built with `tkinter`.
 
-## Prototype features
+## Features
 
-- Case list
-- Evidence viewer
+- Case list with explicit case-opening flow
+- Evidence viewer with smarter photo / audio / video handling
 - Suspect panel
 - Notes area
 - Accusation screen
+- Saved progress in `progress.json`
 
-## How to run
+## Run
 
 ```bash
 python3 app.py
 ```
 
-If you are in a headless environment, open the local web app instead:
+This launches a native desktop window.
 
-```bash
-python3 app.py
-# then visit http://127.0.0.1:8000
-```
+## Notes
+
+- Photo evidence previews directly when the file is a Tk-supported image format.
+- Audio and video evidence can be opened externally from the app.
+- If you add real media files later, put them next to `app.py` or in an `assets/` folder.

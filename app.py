@@ -1,885 +1,854 @@
 import json
 import os
+import subprocess
+import sys
+from dataclasses import dataclass
 from functools import lru_cache
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+import tkinter as tk
+from tkinter import ttk
 
 BASE_DIR = Path(__file__).resolve().parent
 CASES_FILE = BASE_DIR / "cases.json"
 PROGRESS_FILE = BASE_DIR / "progress.json"
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = int(os.environ.get("PORT", "8000"))
+IMAGE_EXTENSIONS = {".png", ".gif", ".ppm", ".pgm"}
+
+
+@dataclass
+class EvidenceItem:
+    id: str
+    type: str
+    title: str
+    summary: str
+    details: str
+    media_hint: str = ""
+
+
+@dataclass
+class SuspectItem:
+    name: str
+    role: str
+    profile: str
+    alibi: str
+    motive: str
+    relationship: str
+
+
+@dataclass
+class CaseItem:
+    id: str
+    title: str
+    status: str
+    victim: dict
+    location: str
+    brief: str
+    scene: str
+    methods: list[str]
+    motives: list[str]
+    suspects: list[SuspectItem]
+    evidence: list[EvidenceItem]
+    solution: dict
 
 
 @lru_cache(maxsize=1)
-def load_cases() -> list[dict]:
+def load_cases() -> list[CaseItem]:
     raw = json.loads(CASES_FILE.read_text(encoding="utf-8"))
-    return raw["cases"] if isinstance(raw, dict) and "cases" in raw else raw
+    records = raw["cases"] if isinstance(raw, dict) and "cases" in raw else raw
+    parsed: list[CaseItem] = []
+    for item in records:
+        parsed.append(
+            CaseItem(
+                id=item["id"],
+                title=item["title"],
+                status=item.get("status", "Open"),
+                victim=item["victim"],
+                location=item["location"],
+                brief=item["brief"],
+                scene=item["scene"],
+                methods=list(item.get("methods", [])),
+                motives=list(item.get("motives", [])),
+                suspects=[SuspectItem(**suspect) for suspect in item.get("suspects", [])],
+                evidence=[EvidenceItem(**evidence) for evidence in item.get("evidence", [])],
+                solution=item["solution"],
+            )
+        )
+    return parsed
 
 
-@lru_cache(maxsize=1)
+def default_progress() -> dict:
+    return {
+        "selected_case_id": "",
+        "open_case_id": "",
+        "solved": [],
+        "notes": {},
+    }
+
+
+def normalize_progress(raw: dict) -> dict:
+    progress = default_progress()
+    progress["selected_case_id"] = raw.get("selected_case_id", "") or ""
+    progress["open_case_id"] = raw.get("open_case_id", "") or ""
+    progress["solved"] = list(raw.get("solved", []))
+
+    notes: dict[str, list[str]] = {}
+    for case_id, value in raw.get("notes", {}).items():
+        if isinstance(value, list):
+            notes[case_id] = [str(note) for note in value if str(note).strip()]
+        elif isinstance(value, str) and value.strip():
+            notes[case_id] = [value.strip()]
+        else:
+            notes[case_id] = []
+    progress["notes"] = notes
+    return progress
+
+
 def load_progress() -> dict:
     if not PROGRESS_FILE.exists():
-        return {"notes": {}, "solved": []}
-    raw = json.loads(PROGRESS_FILE.read_text(encoding="utf-8"))
-    return {"notes": raw.get("notes", {}), "solved": raw.get("solved", [])}
+        return default_progress()
+    try:
+        raw = json.loads(PROGRESS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default_progress()
+    if not isinstance(raw, dict):
+        return default_progress()
+    return normalize_progress(raw)
 
 
 def save_progress(progress: dict) -> None:
     PROGRESS_FILE.write_text(json.dumps(progress, indent=2, ensure_ascii=False), encoding="utf-8")
-    load_progress.cache_clear()
 
 
-def case_by_id(case_id: str) -> dict | None:
-    return next((case for case in load_cases() if case["id"] == case_id), None)
+def evidence_label(evidence: EvidenceItem) -> str:
+    return f"{evidence.id.upper()} — {evidence.title}"
 
 
-def case_summary(case: dict) -> dict:
-    progress = load_progress()
-    solved = case["id"] in set(progress.get("solved", []))
-    return {
-        "id": case["id"],
-        "title": case["title"],
-        "status": case.get("status", "Open"),
-        "victim": case.get("victim", {}),
-        "location": case.get("location", ""),
-        "solved": solved,
-    }
+def resolve_media_path(media_hint: str) -> Path | None:
+    if not media_hint:
+        return None
+    candidates = [
+        BASE_DIR / media_hint,
+        BASE_DIR / "assets" / media_hint,
+        BASE_DIR / "media" / media_hint,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
-def json_response(handler: BaseHTTPRequestHandler, payload: dict | list, status: int = 200) -> None:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Cache-Control", "no-store")
-    handler.end_headers()
-    handler.wfile.write(data)
+def open_external_file(path: Path) -> bool:
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
 
 
-HTML_PAGE = r"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cause of Death</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #0f1116;
-      --panel: #171b24;
-      --panel-2: #1d2330;
-      --line: #2a3142;
-      --text: #e8ecf4;
-      --muted: #9ca7bc;
-      --accent: #86b7ff;
-      --accent-2: #6ee7b7;
-      --danger: #ff7a7a;
-      --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Inter, Segoe UI, Arial, sans-serif;
-      background: radial-gradient(circle at top, #171c28 0%, var(--bg) 55%);
-      color: var(--text);
-      min-height: 100vh;
-    }
-    header {
-      padding: 20px 22px 10px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(12, 14, 19, 0.55);
-      backdrop-filter: blur(8px);
-      position: sticky;
-      top: 0;
-      z-index: 10;
-    }
-    h1 { margin: 0; font-size: 28px; letter-spacing: 0.02em; }
-    .sub { color: var(--muted); margin-top: 6px; }
-    .status { margin-top: 10px; color: var(--accent); font-size: 14px; }
-    main {
-      display: grid;
-      grid-template-columns: 300px minmax(0, 1fr) 360px;
-      gap: 14px;
-      padding: 14px;
-      align-items: start;
-    }
-    .panel {
-      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)), var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-    .panel h2 {
-      margin: 0;
-      padding: 14px 16px;
-      font-size: 15px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #cdd7f7;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255,255,255,0.02);
-    }
-    .panel .content { padding: 14px; }
-    .list { display: grid; gap: 8px; }
-    .case-item, .suspect-item, .evidence-item {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: var(--panel-2);
-      padding: 10px 12px;
-      cursor: pointer;
-      transition: 0.15s ease;
-    }
-    .case-item:hover, .suspect-item:hover, .evidence-item:hover { transform: translateY(-1px); border-color: #40609f; }
-    .case-item.active, .suspect-item.active, .evidence-item.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(134,183,255,0.2); }
-    .case-title { font-weight: 700; }
-    .case-meta, .small { color: var(--muted); font-size: 13px; margin-top: 4px; }
-    .badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
-    .badge.open { background: rgba(134,183,255,0.12); color: var(--accent); }
-    .badge.solved { background: rgba(110,231,183,0.14); color: var(--accent-2); }
-    .section { margin-top: 14px; }
-    .section:first-child { margin-top: 0; }
-    .section-title { color: #cdd7f7; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
-    .card {
-      border: 1px solid var(--line);
-      background: var(--panel-2);
-      border-radius: 14px;
-      padding: 12px;
-    }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .kv { color: var(--muted); font-size: 13px; }
-    .kv strong { color: var(--text); display: block; font-size: 14px; margin-top: 2px; }
-    .textblock { white-space: pre-wrap; line-height: 1.55; color: #eef2fb; }
-    textarea, select, input[type="text"] {
-      width: 100%;
-      border: 1px solid var(--line);
-      background: #131824;
-      color: var(--text);
-      border-radius: 10px;
-      padding: 10px 12px;
-      font: inherit;
-      outline: none;
-    }
-    textarea { min-height: 170px; resize: vertical; }
-    .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
-    button {
-      border: 1px solid var(--line);
-      background: #20263a;
-      color: var(--text);
-      border-radius: 10px;
-      padding: 10px 12px;
-      font: inherit;
-      cursor: pointer;
-    }
-    button.primary { background: linear-gradient(180deg, #3b5ea8, #2d4e93); border-color: #4c70bf; }
-    button:hover { filter: brightness(1.06); }
-    .muted { color: var(--muted); }
-    .message { margin-top: 12px; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,0.03); }
-    .message.good { border-color: rgba(110,231,183,0.35); color: #b7f5d3; }
-    .message.bad { border-color: rgba(255,122,122,0.35); color: #ffb2b2; }
-    .preview-shell {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: #111622;
-      padding: 12px;
-      margin-top: 10px;
-    }
-    .preview-tag {
-      display: inline-block;
-      padding: 3px 8px;
-      border-radius: 999px;
-      background: rgba(134,183,255,0.12);
-      color: var(--accent);
-      font-size: 12px;
-      margin-bottom: 10px;
-    }
-    .preview-figure {
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      background: #0c1018;
-      overflow: hidden;
-      min-height: 180px;
-      display: grid;
-      place-items: center;
-    }
-    .preview-figure img,
-    .preview-figure video {
-      width: 100%;
-      display: block;
-      max-height: 380px;
-      object-fit: contain;
-      background: #0c1018;
-    }
-    .placeholder {
-      padding: 18px;
-      text-align: center;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-    .placeholder strong { color: var(--text); display: block; margin-bottom: 6px; }
-    .locked {
-      opacity: 0.65;
-      pointer-events: none;
-    }
-    .locked-note {
-      border: 1px dashed var(--line);
-      border-radius: 14px;
-      padding: 14px;
-      color: var(--muted);
-      background: rgba(255,255,255,0.02);
-    }
-    @media (max-width: 1180px) { main { grid-template-columns: 1fr; } }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Cause of Death</h1>
-    <div class="sub">A Python crime-solving prototype — open a case first, then inspect evidence, study suspects, write notes, and accuse.</div>
-    <div class="status" id="status">Loading cases…</div>
-  </header>
+class CauseOfDeathApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Cause of Death")
+        self.geometry("1560x960")
+        self.minsize(1320, 840)
+        self.configure(bg="#10131a")
 
-  <main>
-    <section class="panel">
-      <h2>Case List</h2>
-      <div class="content">
-        <div class="list" id="caseList"></div>
+        self.cases = load_cases()
+        self.case_by_id = {case.id: case for case in self.cases}
+        self.progress = load_progress()
+        self.solved_case_ids = set(self.progress.get("solved", []))
+        self.selected_case_id = self._choose_case_id(self.progress.get("selected_case_id", ""))
+        self.open_case_id = self._choose_case_id(self.progress.get("open_case_id", ""))
+        self.current_case = self.case_by_id.get(self.open_case_id)
+        if self.current_case is None:
+            self.open_case_id = ""
 
-        <div class="section">
-          <div class="section-title">Case Opening</div>
-          <div class="card" id="openingPanel">
-            <div class="locked-note">Select a case, then click <strong>Open Case</strong> to start the investigation.</div>
-          </div>
-        </div>
-      </div>
-    </section>
+        self.current_evidence_id = ""
+        self.current_suspect_name = ""
+        self.preview_image: tk.PhotoImage | None = None
 
-    <section class="panel">
-      <h2>Investigation Desk</h2>
-      <div class="content">
-        <div id="deskLocked" class="locked-note">No case is open yet. Choose one from the case list.</div>
+        self.status_var = tk.StringVar(value="Select a case, then open it to begin the investigation.")
+        self.preview_title_var = tk.StringVar(value="No case selected")
+        self.preview_victim_var = tk.StringVar(value="Victim: —")
+        self.preview_location_var = tk.StringVar(value="Location: —")
+        self.preview_status_var = tk.StringVar(value="Status: —")
+        self.case_title_var = tk.StringVar(value="Case file locked")
+        self.case_victim_var = tk.StringVar(value="Victim: —")
+        self.case_location_var = tk.StringVar(value="Location: —")
+        self.case_brief_var = tk.StringVar(value="Open a case to inspect its brief.")
+        self.case_scene_var = tk.StringVar(value="")
+        self.evidence_kind_var = tk.StringVar(value="No evidence selected")
+        self.evidence_title_var = tk.StringVar(value="—")
+        self.evidence_media_var = tk.StringVar(value="Media: —")
+        self.evidence_summary_var = tk.StringVar(value="Pick a clue from the evidence list.")
+        self.evidence_details_var = tk.StringVar(value="")
+        self.evidence_preview_var = tk.StringVar(value="Evidence preview will appear here.")
+        self.suspect_name_var = tk.StringVar(value="—")
+        self.suspect_role_var = tk.StringVar(value="Role: —")
+        self.suspect_profile_var = tk.StringVar(value="Select a suspect to review their profile.")
+        self.suspect_relationship_var = tk.StringVar(value="Relationship: —")
+        self.suspect_alibi_var = tk.StringVar(value="Alibi: —")
+        self.suspect_motive_var = tk.StringVar(value="Motive: —")
+        self.accusation_result_var = tk.StringVar(value="Choose your final theory and submit it here.")
+        self.new_note_var = tk.StringVar(value="")
+        self.open_button_var = tk.StringVar(value="Open Case")
 
-        <div id="deskContent" class="locked" style="display:none;">
-          <div class="section">
-            <div class="section-title">Case File</div>
-            <div class="card" id="caseFile">Open a case to view the file.</div>
-          </div>
+        self._setup_style()
+        self._build_ui()
+        self._refresh_case_list()
+        self._sync_selection()
+        self._sync_open_case_state()
 
-          <div class="section grid-2">
-            <div>
-              <div class="section-title">Evidence Viewer</div>
-              <div class="list" id="evidenceList"></div>
-            </div>
-            <div>
-              <div class="section-title">Evidence Details</div>
-              <div class="card" id="evidenceDetails">
-                <div class="textblock muted">Pick a clue.</div>
-              </div>
-            </div>
-          </div>
+    def _choose_case_id(self, case_id: str) -> str:
+        if case_id and case_id in self.case_by_id:
+            return case_id
+        return self.cases[0].id if self.cases else ""
 
-          <div class="section">
-            <div class="section-title">Notes Area</div>
-            <textarea id="notes" placeholder="Write down contradictions, timelines, and theories."></textarea>
-            <div class="btnrow" style="margin-top:10px;">
-              <button class="primary" id="saveNotes">Save Notes</button>
-              <button id="clearNotes">Clear Notes</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Suspects & Accusation</h2>
-      <div class="content">
-        <div id="rightLocked" class="locked-note">Open a case to reveal the suspect panel and accusation screen.</div>
-
-        <div id="rightContent" class="locked" style="display:none;">
-          <div class="section">
-            <div class="section-title">Suspect Panel</div>
-            <div class="list" id="suspectList"></div>
-            <div class="card textblock section" id="suspectDetails">Choose a suspect.</div>
-          </div>
-
-          <div class="section">
-            <div class="section-title">Accusation Screen</div>
-            <div class="card">
-              <div class="small">Suspect</div>
-              <select id="accSuspect"></select>
-              <div class="small" style="margin-top:10px;">Method</div>
-              <select id="accMethod"></select>
-              <div class="small" style="margin-top:10px;">Motive</div>
-              <select id="accMotive"></select>
-              <div class="small" style="margin-top:10px;">Key evidence</div>
-              <select id="accEvidence"></select>
-              <div class="btnrow" style="margin-top:12px;">
-                <button class="primary" id="submitAccusation">Submit Accusation</button>
-                <button id="resetTheory">Reset Theory</button>
-              </div>
-              <div class="message" id="accMessage">Choose your final theory and submit it here.</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <script>
-    const state = {
-      cases: [],
-      selectedCaseId: null,
-      currentCase: null,
-      currentEvidence: null,
-      currentSuspect: null,
-    };
-
-    const el = (id) => document.getElementById(id);
-    const caseList = el('caseList');
-    const openingPanel = el('openingPanel');
-    const deskLocked = el('deskLocked');
-    const deskContent = el('deskContent');
-    const caseFile = el('caseFile');
-    const evidenceList = el('evidenceList');
-    const evidenceDetails = el('evidenceDetails');
-    const suspectList = el('suspectList');
-    const suspectDetails = el('suspectDetails');
-    const notes = el('notes');
-    const status = el('status');
-    const rightLocked = el('rightLocked');
-    const rightContent = el('rightContent');
-    const accSuspect = el('accSuspect');
-    const accMethod = el('accMethod');
-    const accMotive = el('accMotive');
-    const accEvidence = el('accEvidence');
-    const accMessage = el('accMessage');
-
-    let notesTimer = null;
-
-    function setStatus(text) { status.textContent = text; }
-
-    function escapeHtml(s) {
-      return String(s)
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
-    }
-
-    function option(label, value) {
-      return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
-    }
-
-    function selectedCase() {
-      return state.cases.find(c => c.id === state.selectedCaseId) || null;
-    }
-
-    function renderCaseList() {
-      caseList.innerHTML = state.cases.map(c => {
-        const active = state.selectedCaseId === c.id ? 'active' : '';
-        const badge = c.solved ? '<span class="badge solved">Solved</span>' : '<span class="badge open">Open</span>';
-        return `
-          <div class="case-item ${active}" data-id="${escapeHtml(c.id)}">
-            <div class="case-title">${escapeHtml(c.title)}</div>
-            <div class="case-meta">${escapeHtml(c.victim.name)} — ${escapeHtml(c.location)}</div>
-            ${badge}
-          </div>
-        `;
-      }).join('');
-      caseList.querySelectorAll('.case-item').forEach(node => {
-        node.addEventListener('click', () => selectCase(node.dataset.id));
-      });
-    }
-
-    function renderOpeningPanel() {
-      const c = selectedCase();
-      if (!c) {
-        openingPanel.innerHTML = '<div class="locked-note">No case selected.</div>';
-        return;
-      }
-      const opened = state.currentCase && state.currentCase.id === c.id;
-      openingPanel.innerHTML = `
-        <div class="case-title">${escapeHtml(c.title)}</div>
-        <div class="case-meta">Victim: ${escapeHtml(c.victim.name)} — ${escapeHtml(c.victim.occupation)}</div>
-        <div class="case-meta">Location: ${escapeHtml(c.location)}</div>
-        <div class="case-meta" style="margin-top:10px;">${escapeHtml(c.status || 'Open')}</div>
-        <div class="btnrow" style="margin-top:12px;">
-          <button class="primary" id="openCaseBtn">${opened ? 'Resume Case' : 'Open Case'}</button>
-        </div>
-        <div class="small" style="margin-top:10px;">Select first, then open. That keeps the investigation flow deliberate.</div>
-      `;
-      el('openCaseBtn').addEventListener('click', () => openSelectedCase());
-    }
-
-    function showDesk(open) {
-      deskLocked.style.display = open ? 'none' : 'block';
-      deskContent.style.display = open ? 'block' : 'none';
-      rightLocked.style.display = open ? 'none' : 'block';
-      rightContent.style.display = open ? 'block' : 'none';
-      deskContent.classList.toggle('locked', !open);
-      rightContent.classList.toggle('locked', !open);
-    }
-
-    function renderCaseFile(c) {
-      caseFile.innerHTML = `
-        <div class="grid-2">
-          <div class="kv">Case<strong>${escapeHtml(c.title)}</strong></div>
-          <div class="kv">Status<strong>${escapeHtml(c.status || 'Open')}</strong></div>
-          <div class="kv">Victim<strong>${escapeHtml(c.victim.name)} — ${escapeHtml(c.victim.occupation)}</strong></div>
-          <div class="kv">Location<strong>${escapeHtml(c.location)}</strong></div>
-        </div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Brief</div>
-          <div class="textblock">${escapeHtml(c.brief)}</div>
-        </div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Scene</div>
-          <div class="textblock">${escapeHtml(c.scene)}</div>
-        </div>
-      `;
-    }
-
-    function renderEvidenceList(c) {
-      evidenceList.innerHTML = c.evidence.map((e, idx) => {
-        const active = state.currentEvidence && state.currentEvidence.id === e.id ? 'active' : (!state.currentEvidence && idx === 0 ? 'active' : '');
-        const media = e.media_hint ? e.media_hint : 'no media file';
-        return `
-          <div class="evidence-item ${active}" data-id="${escapeHtml(e.id)}">
-            <div class="case-title">${escapeHtml(e.title)}</div>
-            <div class="case-meta">${escapeHtml(e.type)} — ${escapeHtml(media)}</div>
-          </div>
-        `;
-      }).join('');
-      evidenceList.querySelectorAll('.evidence-item').forEach(node => {
-        node.addEventListener('click', () => selectEvidence(node.dataset.id));
-      });
-    }
-
-    function previewMarkup(e) {
-      const shell = document.createElement('div');
-      shell.className = 'preview-shell';
-      const tag = document.createElement('div');
-      tag.className = 'preview-tag';
-      tag.textContent = e.type.toUpperCase();
-      shell.appendChild(tag);
-      const figure = document.createElement('div');
-      figure.className = 'preview-figure';
-      const hint = e.media_hint ? `/${e.media_hint}` : '';
-
-      if (e.type === 'photo') {
-        if (hint) {
-          const img = document.createElement('img');
-          img.alt = e.title;
-          img.src = hint;
-          img.addEventListener('error', () => {
-            figure.innerHTML = `<div class="placeholder"><strong>Image preview unavailable</strong>The file <code>${escapeHtml(e.media_hint)}</code> is not present yet. Use this slot for the real crime-scene image later.</div>`;
-          });
-          figure.appendChild(img);
-        } else {
-          figure.innerHTML = `<div class="placeholder"><strong>No photo attached</strong>This case does not yet have an image asset.</div>`;
-        }
-      } else if (e.type === 'audio') {
-        if (hint) {
-          const audio = document.createElement('audio');
-          audio.controls = true;
-          audio.preload = 'none';
-          audio.src = hint;
-          audio.style.width = '100%';
-          audio.addEventListener('error', () => {
-            figure.innerHTML = `<div class="placeholder"><strong>Audio preview unavailable</strong>The file <code>${escapeHtml(e.media_hint)}</code> is not present yet. Add the clip later and this player will work.</div>`;
-          });
-          figure.style.padding = '14px';
-          figure.style.display = 'block';
-          figure.appendChild(audio);
-        } else {
-          figure.innerHTML = `<div class="placeholder"><strong>No audio attached</strong>This case does not yet have a recording.</div>`;
-        }
-      } else if (e.type === 'video') {
-        if (hint) {
-          const video = document.createElement('video');
-          video.controls = true;
-          video.preload = 'none';
-          video.src = hint;
-          video.addEventListener('error', () => {
-            figure.innerHTML = `<div class="placeholder"><strong>Video preview unavailable</strong>The file <code>${escapeHtml(e.media_hint)}</code> is not present yet. Add the clip later and this player will work.</div>`;
-          });
-          figure.appendChild(video);
-        } else {
-          figure.innerHTML = `<div class="placeholder"><strong>No video attached</strong>This case does not yet have a clip.</div>`;
-        }
-      } else {
-        figure.innerHTML = `<div class="placeholder"><strong>Document / transcript evidence</strong>Use the summary and details below to inspect the clue.</div>`;
-      }
-
-      shell.appendChild(figure);
-      return shell;
-    }
-
-    function renderEvidenceDetails(e) {
-      evidenceDetails.innerHTML = '';
-      const top = document.createElement('div');
-      top.innerHTML = `
-        <div class="kv">Title<strong>${escapeHtml(e.title)}</strong></div>
-        <div class="grid-2" style="margin-top:10px;">
-          <div class="kv">Type<strong>${escapeHtml(e.type)}</strong></div>
-          <div class="kv">Media<strong>${escapeHtml(e.media_hint || 'N/A')}</strong></div>
-        </div>
-      `;
-      evidenceDetails.appendChild(top);
-      evidenceDetails.appendChild(previewMarkup(e));
-
-      const summary = document.createElement('div');
-      summary.className = 'section';
-      summary.innerHTML = `
-        <div class="section-title" style="margin:12px 0 6px;">Summary</div>
-        <div class="textblock">${escapeHtml(e.summary)}</div>
-      `;
-      evidenceDetails.appendChild(summary);
-
-      const details = document.createElement('div');
-      details.className = 'section';
-      details.innerHTML = `
-        <div class="section-title" style="margin:12px 0 6px;">Details</div>
-        <div class="textblock">${escapeHtml(e.details)}</div>
-      `;
-      evidenceDetails.appendChild(details);
-    }
-
-    function renderSuspects(c) {
-      suspectList.innerHTML = c.suspects.map((s, idx) => {
-        const active = state.currentSuspect && state.currentSuspect.name === s.name ? 'active' : (!state.currentSuspect && idx === 0 ? 'active' : '');
-        return `
-          <div class="suspect-item ${active}" data-name="${escapeHtml(s.name)}">
-            <div class="case-title">${escapeHtml(s.name)}</div>
-            <div class="case-meta">${escapeHtml(s.role)}</div>
-          </div>
-        `;
-      }).join('');
-      suspectList.querySelectorAll('.suspect-item').forEach(node => {
-        node.addEventListener('click', () => selectSuspect(node.dataset.name));
-      });
-    }
-
-    function renderSuspectDetails(s) {
-      suspectDetails.innerHTML = `
-        <div class="kv">Name<strong>${escapeHtml(s.name)}</strong></div>
-        <div class="kv" style="margin-top:10px;">Role<strong>${escapeHtml(s.role)}</strong></div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Profile</div>
-          <div class="textblock">${escapeHtml(s.profile)}</div>
-        </div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Relationship</div>
-          <div class="textblock">${escapeHtml(s.relationship)}</div>
-        </div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Alibi</div>
-          <div class="textblock">${escapeHtml(s.alibi)}</div>
-        </div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Motive</div>
-          <div class="textblock">${escapeHtml(s.motive)}</div>
-        </div>
-      `;
-    }
-
-    function populateAccusation(c) {
-      accSuspect.innerHTML = [option('Select suspect', '')].concat(c.suspects.map(s => option(s.name, s.name))).join('');
-      const methods = [...new Set(c.methods || [])];
-      const motives = [...new Set(c.motives || [])];
-      accMethod.innerHTML = [option('Select method', '')].concat(methods.map(m => option(m, m))).join('');
-      accMotive.innerHTML = [option('Select motive', '')].concat(motives.map(m => option(m, m))).join('');
-      accEvidence.innerHTML = [option('Select evidence', '')].concat(c.evidence.map(e => option(`${e.id.toUpperCase()} — ${e.title}`, e.id))).join('');
-      resetTheory(false);
-    }
-
-    function resetTheory(showMessage = true) {
-      accSuspect.value = '';
-      accMethod.value = '';
-      accMotive.value = '';
-      accEvidence.value = '';
-      if (showMessage) {
-        accMessage.className = 'message';
-        accMessage.textContent = 'Choose your final theory and submit it here.';
-      }
-    }
-
-    async function saveNotes() {
-      if (!state.currentCase) return;
-      const response = await fetch(`/api/cases/${encodeURIComponent(state.currentCase.id)}/notes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ notes: notes.value }),
-      });
-      const result = await response.json();
-      state.currentCase.notes = result.notes || notes.value;
-      setStatus(`Saved notes for ${state.currentCase.title}.`);
-    }
-
-    async function selectEvidence(id) {
-      if (!state.currentCase) return;
-      state.currentEvidence = state.currentCase.evidence.find(e => e.id === id) || state.currentCase.evidence[0];
-      renderEvidenceList(state.currentCase);
-      renderEvidenceDetails(state.currentEvidence);
-      setStatus(`Viewing evidence: ${state.currentEvidence.title}`);
-    }
-
-    async function selectSuspect(name) {
-      if (!state.currentCase) return;
-      state.currentSuspect = state.currentCase.suspects.find(s => s.name === name) || state.currentCase.suspects[0];
-      renderSuspects(state.currentCase);
-      renderSuspectDetails(state.currentSuspect);
-      setStatus(`Viewing suspect: ${state.currentSuspect.name}`);
-    }
-
-    async function selectCase(id) {
-      state.selectedCaseId = id;
-      renderCaseList();
-      renderOpeningPanel();
-      const c = selectedCase();
-      if (c) {
-        setStatus(`Selected case: ${c.title}. Click Open Case to begin.`);
-      }
-    }
-
-    async function openSelectedCase() {
-      const c = selectedCase();
-      if (!c) return;
-      await loadCase(c.id);
-    }
-
-    async function loadCase(id) {
-      const response = await fetch(`/api/cases/${encodeURIComponent(id)}`, { headers: { 'Accept': 'application/json' } });
-      const c = await response.json();
-      state.currentCase = c;
-      state.selectedCaseId = c.id;
-      state.currentEvidence = c.evidence[0] || null;
-      state.currentSuspect = c.suspects[0] || null;
-      localStorage.setItem('cod-selected-case-id', c.id);
-      localStorage.setItem('cod-open-case-id', c.id);
-
-      renderCaseList();
-      renderOpeningPanel();
-      showDesk(true);
-      renderCaseFile(c);
-      renderEvidenceList(c);
-      renderSuspects(c);
-      populateAccusation(c);
-      notes.value = c.notes || '';
-      if (c.evidence[0]) renderEvidenceDetails(c.evidence[0]);
-      if (c.suspects[0]) renderSuspectDetails(c.suspects[0]);
-      setStatus(`Case opened: ${c.title} | Victim: ${c.victim.name} | Status: ${c.solved ? 'Solved' : 'Open'}`);
-    }
-
-    async function submitAccusation() {
-      if (!state.currentCase) return;
-      const payload = {
-        suspect: accSuspect.value,
-        method: accMethod.value,
-        motive: accMotive.value,
-        evidence: accEvidence.value,
-      };
-      const response = await fetch(`/api/cases/${encodeURIComponent(state.currentCase.id)}/accusation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
-      accMessage.className = `message ${result.solved ? 'good' : 'bad'}`;
-      accMessage.textContent = result.message;
-      if (result.solved) {
-        state.currentCase.solved = true;
-        localStorage.removeItem('cod-open-case-id');
-        renderCaseList();
-        renderOpeningPanel();
-        setStatus(`Case solved: ${state.currentCase.title}`);
-      }
-    }
-
-    function bootFromStoredSelection() {
-      const stored = localStorage.getItem('cod-selected-case-id');
-      const fallback = state.cases[0]?.id || null;
-      state.selectedCaseId = state.cases.some(c => c.id === stored) ? stored : fallback;
-      renderCaseList();
-      renderOpeningPanel();
-      const openId = localStorage.getItem('cod-open-case-id');
-      if (state.cases.some(c => c.id === openId)) {
-        loadCase(openId);
-        return;
-      }
-      const c = selectedCase();
-      if (c) {
-        setStatus(`Selected case: ${c.title}. Click Open Case to begin.`);
-      }
-      showDesk(false);
-    }
-
-    async function boot() {
-      const response = await fetch('/api/cases', { headers: { 'Accept': 'application/json' } });
-      state.cases = await response.json();
-      bootFromStoredSelection();
-    }
-
-    el('saveNotes').addEventListener('click', saveNotes);
-    el('clearNotes').addEventListener('click', async () => {
-      notes.value = '';
-      await saveNotes();
-    });
-    el('resetTheory').addEventListener('click', () => resetTheory(true));
-    el('submitAccusation').addEventListener('click', submitAccusation);
-    notes.addEventListener('input', () => {
-      clearTimeout(notesTimer);
-      notesTimer = setTimeout(saveNotes, 350);
-    });
-
-    boot().catch(err => {
-      setStatus(`Failed to load cases: ${err}`);
-      console.error(err);
-    });
-  </script>
-</body>
-</html>"""
-
-
-class CauseOfDeathHandler(BaseHTTPRequestHandler):
-    server_version = "CauseOfDeath/0.3"
-
-    def log_message(self, format: str, *args) -> None:
-        return
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
-        if path == "/":
-            self._send_html(HTML_PAGE)
-            return
-        if path == "/api/cases":
-            json_response(self, [case_summary(case) for case in load_cases()])
-            return
-        if path.startswith("/api/cases/"):
-            parts = path.split("/")
-            if len(parts) >= 4:
-                case_id = parts[3]
-                case = case_by_id(case_id)
-                if not case:
-                    json_response(self, {"error": "Case not found"}, HTTPStatus.NOT_FOUND)
-                    return
-                if len(parts) == 4:
-                    self._send_case(case)
-                    return
-                if len(parts) == 5 and parts[4] == "notes":
-                    progress = load_progress()
-                    notes = progress.get("notes", {}).get(case_id, "")
-                    json_response(self, {"case_id": case_id, "notes": notes})
-                    return
-        json_response(self, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
-
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
-        if not path.startswith("/api/cases/"):
-            json_response(self, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
-            return
-        parts = path.split("/")
-        if len(parts) < 5:
-            json_response(self, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
-            return
-        case_id = parts[3]
-        action = parts[4]
-        case = case_by_id(case_id)
-        if not case:
-            json_response(self, {"error": "Case not found"}, HTTPStatus.NOT_FOUND)
-            return
-        body = self._read_json_body()
-        progress = load_progress()
-        if action == "notes":
-            progress.setdefault("notes", {})[case_id] = body.get("notes", "")
-            save_progress(progress)
-            json_response(self, {"ok": True, "case_id": case_id, "notes": progress["notes"][case_id]})
-            return
-        if action == "accusation":
-            result = self._grade_accusation(case, body, progress)
-            save_progress(progress)
-            json_response(self, result)
-            return
-        json_response(self, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
-
-    def _send_html(self, html: str) -> None:
-        data = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _send_case(self, case: dict) -> None:
-        progress = load_progress()
-        notes = progress.get("notes", {}).get(case["id"], "")
-        solved = case["id"] in set(progress.get("solved", []))
-        payload = dict(case)
-        payload["notes"] = notes
-        payload["solved"] = solved
-        json_response(self, payload)
-
-    def _read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length) if length else b"{}"
+    def _setup_style(self) -> None:
+        style = ttk.Style()
         try:
-            return json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError:
-            return {}
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(".", background="#10131a", foreground="#e9edf7")
+        style.configure("TFrame", background="#10131a")
+        style.configure("TLabel", background="#10131a", foreground="#e9edf7")
+        style.configure("TButton", padding=(10, 6), background="#283142", foreground="#ffffff")
+        style.map("TButton", background=[("active", "#3a4660")])
+        style.configure("TLabelframe", background="#10131a", foreground="#cfd8ff")
+        style.configure("TLabelframe.Label", background="#10131a", foreground="#9fb6ff", font=("Segoe UI", 10, "bold"))
+        style.configure("TCombobox", fieldbackground="#171d29", background="#171d29", foreground="#e9edf7")
 
-    def _grade_accusation(self, case: dict, body: dict, progress: dict) -> dict:
-        solution = case["solution"]
-        correct_evidence = next(
-            (f"{item['id'].upper()} — {item['title']}" for item in case["evidence"] if item["id"] == solution["key_evidence"]),
-            "",
+    def _build_ui(self) -> None:
+        header = ttk.Frame(self, padding=(18, 16, 18, 12))
+        header.grid(row=0, column=0, columnspan=3, sticky="ew")
+        header.columnconfigure(0, weight=1)
+
+        ttk.Label(header, text="Cause of Death", font=("Segoe UI", 24, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header,
+            text="A Python desktop crime-solving game — select a case, open it, inspect evidence, study suspects, take notes, and accuse.",
+            foreground="#a7b2c9",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(header, textvariable=self.status_var, foreground="#86b7ff").grid(row=2, column=0, sticky="w", pady=(8, 0))
+
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=2)
+        self.grid_columnconfigure(2, weight=1)
+
+        self.left_frame = ttk.Frame(self, padding=(16, 0, 8, 16))
+        self.center_frame = ttk.Frame(self, padding=(8, 0, 8, 16))
+        self.right_frame = ttk.Frame(self, padding=(8, 0, 16, 16))
+        self.left_frame.grid(row=1, column=0, sticky="nsew")
+        self.center_frame.grid(row=1, column=1, sticky="nsew")
+        self.right_frame.grid(row=1, column=2, sticky="nsew")
+        self.center_frame.grid_columnconfigure(0, weight=1)
+        self.right_frame.grid_columnconfigure(0, weight=1)
+
+        self._build_left_panel()
+        self._build_center_panel()
+        self._build_right_panel()
+
+    def _build_left_panel(self) -> None:
+        case_box = ttk.LabelFrame(self.left_frame, text="Case List", padding=10)
+        case_box.pack(fill=tk.BOTH, expand=True)
+
+        list_row = ttk.Frame(case_box)
+        list_row.pack(fill=tk.BOTH, expand=False)
+        self.case_listbox = tk.Listbox(
+            list_row,
+            height=13,
+            bg="#151b26",
+            fg="#e9edf7",
+            selectbackground="#4360b3",
+            selectforeground="#ffffff",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="dotbox",
+            exportselection=False,
         )
-        guess = {
-            "suspect": body.get("suspect", ""),
-            "method": body.get("method", ""),
-            "motive": body.get("motive", ""),
-            "evidence": body.get("evidence", ""),
-        }
+        case_scroll = ttk.Scrollbar(list_row, orient=tk.VERTICAL, command=self.case_listbox.yview)
+        self.case_listbox.configure(yscrollcommand=case_scroll.set)
+        self.case_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        case_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.case_listbox.bind("<<ListboxSelect>>", self._on_case_selected)
+
+        self.case_preview_box = ttk.LabelFrame(case_box, text="Case Opening", padding=10)
+        self.case_preview_box.pack(fill=tk.BOTH, expand=False, pady=(12, 0))
+
+        ttk.Label(self.case_preview_box, textvariable=self.preview_title_var, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(self.case_preview_box, textvariable=self.preview_victim_var, foreground="#a7b2c9", wraplength=360, justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
+        ttk.Label(self.case_preview_box, textvariable=self.preview_location_var, foreground="#a7b2c9", wraplength=360, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+        ttk.Label(self.case_preview_box, textvariable=self.preview_status_var, foreground="#8bc4ff", wraplength=360, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+
+        button_row = ttk.Frame(self.case_preview_box)
+        button_row.pack(fill=tk.X, pady=(10, 0))
+        self.open_button = ttk.Button(button_row, textvariable=self.open_button_var, command=self._open_selected_case)
+        self.open_button.pack(side=tk.LEFT)
+        self.close_button = ttk.Button(button_row, text="Close Case", command=self._close_case)
+        self.close_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Label(
+            self.case_preview_box,
+            text="Select a case, then open it to start the investigation desk.",
+            foreground="#a7b2c9",
+            wraplength=360,
+            justify=tk.LEFT,
+        ).pack(anchor="w", pady=(10, 0))
+
+    def _build_center_panel(self) -> None:
+        self.center_locked = ttk.LabelFrame(self.center_frame, text="Investigation Desk", padding=14)
+        self.center_locked.pack(fill=tk.BOTH, expand=True)
+        self.center_locked_message = ttk.Label(
+            self.center_locked,
+            text="No case is open yet. Choose one from the case list and click Open Case.",
+            foreground="#a7b2c9",
+            wraplength=580,
+            justify=tk.LEFT,
+        )
+        self.center_locked_message.pack(anchor="w")
+
+        self.center_content = ttk.Frame(self.center_frame)
+        self.center_content.pack(fill=tk.BOTH, expand=True)
+
+        file_box = ttk.LabelFrame(self.center_content, text="Case File", padding=12)
+        file_box.pack(fill=tk.X, expand=False)
+        ttk.Label(file_box, textvariable=self.case_title_var, font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        ttk.Label(file_box, textvariable=self.case_victim_var, foreground="#a7b2c9", wraplength=700, justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
+        ttk.Label(file_box, textvariable=self.case_location_var, foreground="#a7b2c9", wraplength=700, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+        ttk.Label(file_box, text="Brief", foreground="#9fb6ff", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 0))
+        ttk.Label(file_box, textvariable=self.case_brief_var, wraplength=700, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+        ttk.Label(file_box, text="Scene", foreground="#9fb6ff", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 0))
+        ttk.Label(file_box, textvariable=self.case_scene_var, wraplength=700, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+
+        evidence_row = ttk.Frame(self.center_content)
+        evidence_row.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+
+        evidence_list_box = ttk.LabelFrame(evidence_row, text="Evidence Viewer", padding=10)
+        evidence_list_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.evidence_listbox = tk.Listbox(
+            evidence_list_box,
+            height=10,
+            bg="#151b26",
+            fg="#e9edf7",
+            selectbackground="#4360b3",
+            selectforeground="#ffffff",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        evidence_scroll = ttk.Scrollbar(evidence_list_box, orient=tk.VERTICAL, command=self.evidence_listbox.yview)
+        self.evidence_listbox.configure(yscrollcommand=evidence_scroll.set)
+        self.evidence_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        evidence_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.evidence_listbox.bind("<<ListboxSelect>>", self._on_evidence_selected)
+
+        evidence_detail_box = ttk.LabelFrame(evidence_row, text="Evidence Details", padding=10)
+        evidence_detail_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        ttk.Label(evidence_detail_box, textvariable=self.evidence_kind_var, foreground="#8bc4ff", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(evidence_detail_box, textvariable=self.evidence_title_var, font=("Segoe UI", 12, "bold"), wraplength=480, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+        ttk.Label(evidence_detail_box, textvariable=self.evidence_media_var, foreground="#a7b2c9", wraplength=480, justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
+
+        self.evidence_preview_label = ttk.Label(
+            evidence_detail_box,
+            textvariable=self.evidence_preview_var,
+            justify=tk.CENTER,
+            anchor="center",
+            background="#0e1219",
+            foreground="#a7b2c9",
+            relief=tk.SOLID,
+            borderwidth=1,
+            padding=12,
+            wraplength=460,
+        )
+        self.evidence_preview_label.pack(fill=tk.BOTH, expand=False, pady=(10, 0))
+
+        ttk.Label(evidence_detail_box, text="Summary", foreground="#9fb6ff", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 0))
+        ttk.Label(evidence_detail_box, textvariable=self.evidence_summary_var, wraplength=480, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+        ttk.Label(evidence_detail_box, text="Details", foreground="#9fb6ff", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 0))
+        ttk.Label(evidence_detail_box, textvariable=self.evidence_details_var, wraplength=480, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+
+        media_buttons = ttk.Frame(evidence_detail_box)
+        media_buttons.pack(fill=tk.X, pady=(10, 0))
+        self.open_media_button = ttk.Button(media_buttons, text="Open Media", command=self._open_current_media)
+        self.open_media_button.pack(side=tk.LEFT)
+
+        notes_box = ttk.LabelFrame(self.center_content, text="Notes Area", padding=10)
+        notes_box.pack(fill=tk.BOTH, expand=False, pady=(12, 0))
+        notes_row = ttk.Frame(notes_box)
+        notes_row.pack(fill=tk.X)
+        ttk.Entry(notes_row, textvariable=self.new_note_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(notes_row, text="Add Note", command=self._add_note).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(notes_row, text="Delete Selected", command=self._delete_selected_note).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(notes_row, text="Clear Notes", command=self._clear_notes).pack(side=tk.LEFT, padx=(8, 0))
+
+        notes_list_row = ttk.Frame(notes_box)
+        notes_list_row.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        self.notes_listbox = tk.Listbox(
+            notes_list_row,
+            height=7,
+            bg="#151b26",
+            fg="#e9edf7",
+            selectbackground="#4360b3",
+            selectforeground="#ffffff",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        notes_scroll = ttk.Scrollbar(notes_list_row, orient=tk.VERTICAL, command=self.notes_listbox.yview)
+        self.notes_listbox.configure(yscrollcommand=notes_scroll.set)
+        self.notes_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        notes_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.notes_count_var = tk.StringVar(value="0 notes")
+        ttk.Label(notes_box, textvariable=self.notes_count_var, foreground="#a7b2c9").pack(anchor="e", pady=(8, 0))
+
+    def _build_right_panel(self) -> None:
+        self.right_locked = ttk.LabelFrame(self.right_frame, text="Suspects & Accusation", padding=14)
+        self.right_locked.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            self.right_locked,
+            text="Open a case to reveal the suspect panel and accusation screen.",
+            foreground="#a7b2c9",
+            wraplength=350,
+            justify=tk.LEFT,
+        ).pack(anchor="w")
+
+        self.right_content = ttk.Frame(self.right_frame)
+        self.right_content.pack(fill=tk.BOTH, expand=True)
+
+        suspect_box = ttk.LabelFrame(self.right_content, text="Suspect Panel", padding=10)
+        suspect_box.pack(fill=tk.BOTH, expand=True)
+        self.suspect_listbox = tk.Listbox(
+            suspect_box,
+            height=10,
+            bg="#151b26",
+            fg="#e9edf7",
+            selectbackground="#4360b3",
+            selectforeground="#ffffff",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        suspect_scroll = ttk.Scrollbar(suspect_box, orient=tk.VERTICAL, command=self.suspect_listbox.yview)
+        self.suspect_listbox.configure(yscrollcommand=suspect_scroll.set)
+        self.suspect_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        suspect_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.suspect_listbox.bind("<<ListboxSelect>>", self._on_suspect_selected)
+
+        suspect_detail_box = ttk.LabelFrame(suspect_box, text="Suspect Details", padding=10)
+        suspect_detail_box.pack(fill=tk.BOTH, expand=False, pady=(10, 0))
+        ttk.Label(suspect_detail_box, textvariable=self.suspect_name_var, font=("Segoe UI", 12, "bold"), wraplength=360, justify=tk.LEFT).pack(anchor="w")
+        ttk.Label(suspect_detail_box, textvariable=self.suspect_role_var, foreground="#a7b2c9").pack(anchor="w", pady=(2, 0))
+        ttk.Label(suspect_detail_box, text="Profile", foreground="#9fb6ff", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 0))
+        ttk.Label(suspect_detail_box, textvariable=self.suspect_profile_var, wraplength=360, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+        ttk.Label(suspect_detail_box, textvariable=self.suspect_relationship_var, wraplength=360, justify=tk.LEFT).pack(anchor="w", pady=(10, 0))
+        ttk.Label(suspect_detail_box, textvariable=self.suspect_alibi_var, wraplength=360, justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
+        ttk.Label(suspect_detail_box, textvariable=self.suspect_motive_var, wraplength=360, justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
+
+        accusation_box = ttk.LabelFrame(self.right_content, text="Accusation Screen", padding=10)
+        accusation_box.pack(fill=tk.BOTH, expand=False, pady=(12, 0))
+
+        self.acc_suspect = ttk.Combobox(accusation_box, state="readonly")
+        self.acc_method = ttk.Combobox(accusation_box, state="readonly")
+        self.acc_motive = ttk.Combobox(accusation_box, state="readonly")
+        self.acc_evidence = ttk.Combobox(accusation_box, state="readonly")
+
+        self._combo_row(accusation_box, "Suspect", self.acc_suspect, 0)
+        self._combo_row(accusation_box, "Method", self.acc_method, 1)
+        self._combo_row(accusation_box, "Motive", self.acc_motive, 2)
+        self._combo_row(accusation_box, "Key evidence", self.acc_evidence, 3)
+
+        button_row = ttk.Frame(accusation_box)
+        button_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 6))
+        ttk.Button(button_row, text="Submit Accusation", command=self._submit_accusation).pack(side=tk.LEFT)
+        ttk.Button(button_row, text="Reset Theory", command=self._reset_theory).pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Label(
+            accusation_box,
+            textvariable=self.accusation_result_var,
+            wraplength=360,
+            justify=tk.LEFT,
+            foreground="#c7d6ff",
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
+        accusation_box.columnconfigure(1, weight=1)
+
+    def _combo_row(self, parent: ttk.Frame, label: str, combo: ttk.Combobox, row: int) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        combo.grid(row=row, column=1, sticky="ew", pady=4, padx=(10, 0))
+
+    def _refresh_case_list(self) -> None:
+        self.case_listbox.delete(0, tk.END)
+        for case in self.cases:
+            prefix = "✓ " if case.id in self.solved_case_ids else ""
+            self.case_listbox.insert(tk.END, f"{prefix}{case.title}")
+        selected_index = next((index for index, case in enumerate(self.cases) if case.id == self.selected_case_id), 0)
+        if self.cases:
+            self.case_listbox.selection_set(selected_index)
+            self.case_listbox.activate(selected_index)
+            self.case_listbox.see(selected_index)
+
+    def _sync_selection(self) -> None:
+        selected_case = self.case_by_id.get(self.selected_case_id, self.cases[0] if self.cases else None)
+        if not selected_case:
+            return
+        self.preview_title_var.set(selected_case.title)
+        self.preview_victim_var.set(f"Victim: {selected_case.victim['name']} — {selected_case.victim['occupation']}")
+        self.preview_location_var.set(f"Location: {selected_case.location}")
+        if self.current_case and self.current_case.id == selected_case.id:
+            self.preview_status_var.set("Status: open in the desk")
+            self.open_button_var.set("Resume Case")
+        elif self.current_case:
+            self.preview_status_var.set("Status: selected, but another case is currently open")
+            self.open_button_var.set("Open Selected Case")
+        else:
+            self.preview_status_var.set("Status: ready to open")
+            self.open_button_var.set("Open Case")
+        self._render_case_preview_buttons()
+
+    def _render_case_preview_buttons(self) -> None:
+        if self.current_case:
+            self.close_button.state(["!disabled"])
+        else:
+            self.close_button.state(["disabled"])
+
+    def _selected_case(self) -> CaseItem | None:
+        return self.case_by_id.get(self.selected_case_id)
+
+    def _on_case_selected(self, event: object | None = None) -> None:
+        selection = self.case_listbox.curselection()
+        if not selection:
+            return
+        case = self.cases[selection[0]]
+        self.selected_case_id = case.id
+        self.progress["selected_case_id"] = case.id
+        save_progress(self.progress)
+        self._sync_selection()
+        self.status_var.set(f"Selected case: {case.title}. Click Open Case to begin.")
+
+    def _open_selected_case(self) -> None:
+        case = self._selected_case()
+        if not case:
+            return
+        self.open_case_id = case.id
+        self.current_case = case
+        self.current_evidence_id = case.evidence[0].id if case.evidence else ""
+        self.current_suspect_name = case.suspects[0].name if case.suspects else ""
+        self.progress["open_case_id"] = case.id
+        self.progress["selected_case_id"] = case.id
+        save_progress(self.progress)
+        self._refresh_case_list()
+        self._sync_selection()
+        self._sync_open_case_state()
+        self._status_open_case(case)
+
+    def _close_case(self) -> None:
+        self.open_case_id = ""
+        self.current_case = None
+        self.current_evidence_id = ""
+        self.current_suspect_name = ""
+        self.progress["open_case_id"] = ""
+        save_progress(self.progress)
+        self._sync_selection()
+        self._sync_open_case_state()
+        self.status_var.set("Case closed. Select another case or resume the same one.")
+
+    def _sync_open_case_state(self) -> None:
+        if self.current_case:
+            self.center_locked.pack_forget()
+            self.right_locked.pack_forget()
+            self.center_content.pack(fill=tk.BOTH, expand=True)
+            self.right_content.pack(fill=tk.BOTH, expand=True)
+            self.close_button.state(["!disabled"])
+            self._render_case_contents(self.current_case)
+            self._render_case_list_details(self.current_case)
+        else:
+            self.center_content.pack_forget()
+            self.right_content.pack_forget()
+            self.center_locked.pack(fill=tk.BOTH, expand=True)
+            self.right_locked.pack(fill=tk.BOTH, expand=True)
+            self.close_button.state(["disabled"])
+            self._clear_case_fields()
+
+    def _status_open_case(self, case: CaseItem) -> None:
+        self.status_var.set(f"Case opened: {case.title} | Victim: {case.victim['name']} | Status: {case.status}")
+
+    def _clear_case_fields(self) -> None:
+        self.case_title_var.set("Case file locked")
+        self.case_victim_var.set("Victim: —")
+        self.case_location_var.set("Location: —")
+        self.case_brief_var.set("Open a case to inspect its brief.")
+        self.case_scene_var.set("")
+        self.evidence_kind_var.set("No evidence selected")
+        self.evidence_title_var.set("—")
+        self.evidence_media_var.set("Media: —")
+        self.evidence_summary_var.set("Pick a clue from the evidence list.")
+        self.evidence_details_var.set("")
+        self.evidence_preview_var.set("Evidence preview will appear here.")
+        self.suspect_name_var.set("—")
+        self.suspect_role_var.set("Role: —")
+        self.suspect_profile_var.set("Select a suspect to review their profile.")
+        self.suspect_relationship_var.set("Relationship: —")
+        self.suspect_alibi_var.set("Alibi: —")
+        self.suspect_motive_var.set("Motive: —")
+        self.notes_listbox.delete(0, tk.END)
+        self.notes_count_var.set("0 notes")
+        self.evidence_listbox.delete(0, tk.END)
+        self.suspect_listbox.delete(0, tk.END)
+        self.acc_suspect["values"] = []
+        self.acc_method["values"] = []
+        self.acc_motive["values"] = []
+        self.acc_evidence["values"] = []
+        self._reset_theory()
+
+    def _render_case_contents(self, case: CaseItem) -> None:
+        self.case_title_var.set(case.title)
+        self.case_victim_var.set(f"Victim: {case.victim['name']} — {case.victim['occupation']}")
+        self.case_location_var.set(f"Location: {case.location}")
+        self.case_brief_var.set(case.brief)
+        self.case_scene_var.set(case.scene)
+        self._render_evidence_list(case)
+        self._render_suspect_list(case)
+        self._render_accusation_options(case)
+        self._render_notes()
+        self._select_default_evidence(case)
+        self._select_default_suspect(case)
+
+    def _render_case_list_details(self, case: CaseItem) -> None:
+        self.preview_title_var.set(case.title)
+        self.preview_victim_var.set(f"Victim: {case.victim['name']} — {case.victim['occupation']}")
+        self.preview_location_var.set(f"Location: {case.location}")
+        if self.current_case and self.current_case.id == case.id:
+            self.preview_status_var.set("Status: open in the desk")
+            self.open_button_var.set("Resume Case")
+        else:
+            self.preview_status_var.set("Status: ready to open")
+            self.open_button_var.set("Open Case")
+
+    def _render_evidence_list(self, case: CaseItem) -> None:
+        self.evidence_listbox.delete(0, tk.END)
+        for evidence in case.evidence:
+            self.evidence_listbox.insert(tk.END, evidence_label(evidence))
+
+    def _render_suspect_list(self, case: CaseItem) -> None:
+        self.suspect_listbox.delete(0, tk.END)
+        for suspect in case.suspects:
+            self.suspect_listbox.insert(tk.END, f"{suspect.name} — {suspect.role}")
+
+    def _render_accusation_options(self, case: CaseItem) -> None:
+        self.acc_suspect["values"] = ["Select suspect"] + [suspect.name for suspect in case.suspects]
+        self.acc_method["values"] = ["Select method"] + list(dict.fromkeys(case.methods))
+        self.acc_motive["values"] = ["Select motive"] + list(dict.fromkeys(case.motives))
+        self.acc_evidence["values"] = ["Select evidence"] + [evidence_label(item) for item in case.evidence]
+        self._reset_theory()
+
+    def _select_default_evidence(self, case: CaseItem) -> None:
+        if not case.evidence:
+            return
+        self.evidence_listbox.selection_clear(0, tk.END)
+        self.evidence_listbox.selection_set(0)
+        self.evidence_listbox.activate(0)
+        self._on_evidence_selected()
+
+    def _select_default_suspect(self, case: CaseItem) -> None:
+        if not case.suspects:
+            return
+        self.suspect_listbox.selection_clear(0, tk.END)
+        self.suspect_listbox.selection_set(0)
+        self.suspect_listbox.activate(0)
+        self._on_suspect_selected()
+
+    def _on_evidence_selected(self, event: object | None = None) -> None:
+        if not self.current_case:
+            return
+        selection = self.evidence_listbox.curselection()
+        if not selection:
+            return
+        evidence = self.current_case.evidence[selection[0]]
+        self.current_evidence_id = evidence.id
+        self._render_evidence_details(evidence)
+
+    def _on_suspect_selected(self, event: object | None = None) -> None:
+        if not self.current_case:
+            return
+        selection = self.suspect_listbox.curselection()
+        if not selection:
+            return
+        suspect = self.current_case.suspects[selection[0]]
+        self.current_suspect_name = suspect.name
+        self._render_suspect_details(suspect)
+
+    def _render_evidence_details(self, evidence: EvidenceItem) -> None:
+        self.evidence_kind_var.set(evidence.type.upper())
+        self.evidence_title_var.set(evidence.title)
+        self.evidence_media_var.set(f"Media: {evidence.media_hint or 'No media file yet'}")
+        self.evidence_summary_var.set(evidence.summary)
+        self.evidence_details_var.set(evidence.details)
+
+        media_path = resolve_media_path(evidence.media_hint)
+        self._update_media_preview(evidence, media_path)
+
+    def _update_media_preview(self, evidence: EvidenceItem, media_path: Path | None) -> None:
+        self.preview_image = None
+        if evidence.type == "photo":
+            if media_path and media_path.suffix.lower() in IMAGE_EXTENSIONS:
+                try:
+                    self.preview_image = tk.PhotoImage(file=str(media_path))
+                    self.evidence_preview_label.configure(image=self.preview_image, text="", compound=tk.CENTER)
+                    self.evidence_preview_var.set(f"Previewing {media_path.name}")
+                    self.open_media_button.state(["!disabled"])
+                    return
+                except tk.TclError:
+                    pass
+            if media_path:
+                self.evidence_preview_var.set(
+                    f"Photo file found: {media_path.name}\n\nTk can only preview PNG, GIF, PGM, and PPM files directly. Use Open Media to view it in your desktop app."
+                )
+                self.open_media_button.state(["!disabled"])
+            else:
+                self.evidence_preview_var.set(
+                    "Photo evidence placeholder\n\nNo image file is attached yet. Add a PNG, GIF, JPG, or similar file later and the viewer can open it from the desktop."
+                )
+                self.open_media_button.state(["disabled"])
+            self.evidence_preview_label.configure(image="", text=self.evidence_preview_var.get(), compound=tk.CENTER)
+            return
+
+        if evidence.type in {"audio", "video"}:
+            if media_path:
+                self.evidence_preview_var.set(
+                    f"{evidence.type.title()} file found: {media_path.name}\n\nUse Open Media to launch it in your desktop player."
+                )
+                self.open_media_button.state(["!disabled"])
+            else:
+                self.evidence_preview_var.set(
+                    f"{evidence.type.title()} evidence placeholder\n\nNo media file is attached yet. When you add one, Open Media will launch it externally."
+                )
+                self.open_media_button.state(["disabled"])
+            self.evidence_preview_label.configure(image="", text=self.evidence_preview_var.get(), compound=tk.CENTER)
+            return
+
+        self.evidence_preview_var.set(
+            "Document / transcript evidence\n\nRead the summary and details. If a file is attached later, Open Media will launch it externally."
+        )
+        self.evidence_preview_label.configure(image="", text=self.evidence_preview_var.get(), compound=tk.CENTER)
+        self.open_media_button.state(["!disabled"] if media_path else ["disabled"])
+
+    def _render_suspect_details(self, suspect: SuspectItem) -> None:
+        self.suspect_name_var.set(suspect.name)
+        self.suspect_role_var.set(f"Role: {suspect.role}")
+        self.suspect_profile_var.set(suspect.profile)
+        self.suspect_relationship_var.set(f"Relationship: {suspect.relationship}")
+        self.suspect_alibi_var.set(f"Alibi: {suspect.alibi}")
+        self.suspect_motive_var.set(f"Motive: {suspect.motive}")
+
+    def _render_notes(self) -> None:
+        self.notes_listbox.delete(0, tk.END)
+        notes = self.progress.get("notes", {}).get(self.current_case.id, []) if self.current_case else []
+        for note in notes:
+            self.notes_listbox.insert(tk.END, note)
+        self.notes_count_var.set(f"{len(notes)} note{'s' if len(notes) != 1 else ''}")
+
+    def _add_note(self) -> None:
+        if not self.current_case:
+            return
+        note = self.new_note_var.get().strip()
+        if not note:
+            return
+        notes = self.progress.setdefault("notes", {}).setdefault(self.current_case.id, [])
+        notes.append(note)
+        self.new_note_var.set("")
+        save_progress(self.progress)
+        self._render_notes()
+        self.status_var.set(f"Saved note for {self.current_case.title}.")
+
+    def _delete_selected_note(self) -> None:
+        if not self.current_case:
+            return
+        selection = self.notes_listbox.curselection()
+        if not selection:
+            return
+        notes = self.progress.setdefault("notes", {}).setdefault(self.current_case.id, [])
+        if selection[0] < len(notes):
+            notes.pop(selection[0])
+            save_progress(self.progress)
+            self._render_notes()
+            self.status_var.set(f"Removed a note from {self.current_case.title}.")
+
+    def _clear_notes(self) -> None:
+        if not self.current_case:
+            return
+        self.progress.setdefault("notes", {})[self.current_case.id] = []
+        save_progress(self.progress)
+        self._render_notes()
+        self.status_var.set(f"Cleared notes for {self.current_case.title}.")
+
+    def _open_current_media(self) -> None:
+        if not self.current_case or not self.current_evidence_id:
+            return
+        evidence = next((item for item in self.current_case.evidence if item.id == self.current_evidence_id), None)
+        if not evidence:
+            return
+        media_path = resolve_media_path(evidence.media_hint)
+        if media_path and open_external_file(media_path):
+            self.status_var.set(f"Opened media: {media_path.name}")
+        else:
+            self.status_var.set("No media file is available to open yet.")
+
+    def _reset_theory(self) -> None:
+        self.acc_suspect.set("Select suspect")
+        self.acc_method.set("Select method")
+        self.acc_motive.set("Select motive")
+        self.acc_evidence.set("Select evidence")
+        self.accusation_result_var.set("Choose your final theory and submit it here.")
+
+    def _submit_accusation(self) -> None:
+        if not self.current_case:
+            return
+        suspect = self.acc_suspect.get()
+        method = self.acc_method.get()
+        motive = self.acc_motive.get()
+        evidence = self.acc_evidence.get()
+        if any(value.startswith("Select ") or not value for value in (suspect, method, motive, evidence)):
+            self.accusation_result_var.set("Choose a suspect, method, motive, and key evidence before submitting.")
+            return
+
+        solution = self.current_case.solution
+        correct_evidence = evidence_label(
+            next(item for item in self.current_case.evidence if item.id == solution["key_evidence"])
+        )
         matches = {
-            "suspect": guess["suspect"] == solution["killer"],
-            "method": guess["method"] == solution["method"],
-            "motive": guess["motive"] == solution["motive"],
-            "evidence": guess["evidence"] == correct_evidence,
+            "suspect": suspect == solution["killer"],
+            "method": method == solution["method"],
+            "motive": motive == solution["motive"],
+            "evidence": evidence == correct_evidence,
         }
         score = sum(matches.values())
         if score == 4:
-            solved = set(progress.get("solved", []))
-            solved.add(case["id"])
-            progress["solved"] = sorted(solved)
-            return {
-                "ok": True,
-                "solved": True,
-                "score": 4,
-                "message": f"Case solved. You correctly identified {solution['killer']}, the {solution['method']} method, the {solution['motive']} motive, and the key evidence.",
-            }
+            self.solved_case_ids.add(self.current_case.id)
+            self.progress["solved"] = sorted(self.solved_case_ids)
+            save_progress(self.progress)
+            self._refresh_case_list()
+            self.accusation_result_var.set("Case solved. All four parts of the accusation are correct.")
+            self.status_var.set(f"Case solved: {self.current_case.title}")
+            return
+
         failed = ", ".join(name for name, ok in matches.items() if not ok)
-        return {
-            "ok": False,
-            "solved": False,
-            "score": score,
-            "message": f"Accusation rejected. You matched {score}/4 parts. Review: {failed}.",
-        }
+        self.accusation_result_var.set(f"Accusation rejected. You matched {score}/4 parts. Review: {failed}.")
+        self.status_var.set(f"Accusation failed for {self.current_case.title}.")
 
 
 def main() -> None:
-    server = ThreadingHTTPServer((DEFAULT_HOST, DEFAULT_PORT), CauseOfDeathHandler)
-    print(f"Cause of Death running at http://{DEFAULT_HOST}:{DEFAULT_PORT}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    app = CauseOfDeathApp()
+    app.mainloop()
 
 
 if __name__ == "__main__":
