@@ -24,10 +24,7 @@ def load_progress() -> dict:
     if not PROGRESS_FILE.exists():
         return {"notes": {}, "solved": []}
     raw = json.loads(PROGRESS_FILE.read_text(encoding="utf-8"))
-    return {
-        "notes": raw.get("notes", {}),
-        "solved": raw.get("solved", []),
-    }
+    return {"notes": raw.get("notes", {}), "solved": raw.get("solved", [])}
 
 
 def save_progress(progress: dict) -> None:
@@ -52,17 +49,7 @@ def case_summary(case: dict) -> dict:
     }
 
 
-def unique(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in values:
-        if value and value not in seen:
-            seen.add(value)
-            ordered.append(value)
-    return ordered
-
-
-def json_response(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200) -> None:
+def json_response(handler: BaseHTTPRequestHandler, payload: dict | list, status: int = 200) -> None:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -114,7 +101,7 @@ HTML_PAGE = r"""<!doctype html>
     .status { margin-top: 10px; color: var(--accent); font-size: 14px; }
     main {
       display: grid;
-      grid-template-columns: 290px minmax(0, 1fr) 350px;
+      grid-template-columns: 300px minmax(0, 1fr) 360px;
       gap: 14px;
       padding: 14px;
       align-items: start;
@@ -150,7 +137,7 @@ HTML_PAGE = r"""<!doctype html>
     .case-item.active, .suspect-item.active, .evidence-item.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(134,183,255,0.2); }
     .case-title { font-weight: 700; }
     .case-meta, .small { color: var(--muted); font-size: 13px; margin-top: 4px; }
-    .badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: rgba(110,231,183,0.12); color: var(--accent-2); }
+    .badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
     .badge.open { background: rgba(134,183,255,0.12); color: var(--accent); }
     .badge.solved { background: rgba(110,231,183,0.14); color: var(--accent-2); }
     .section { margin-top: 14px; }
@@ -193,13 +180,64 @@ HTML_PAGE = r"""<!doctype html>
     .message { margin-top: 12px; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,0.03); }
     .message.good { border-color: rgba(110,231,183,0.35); color: #b7f5d3; }
     .message.bad { border-color: rgba(255,122,122,0.35); color: #ffb2b2; }
+    .preview-shell {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #111622;
+      padding: 12px;
+      margin-top: 10px;
+    }
+    .preview-tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(134,183,255,0.12);
+      color: var(--accent);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+    .preview-figure {
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #0c1018;
+      overflow: hidden;
+      min-height: 180px;
+      display: grid;
+      place-items: center;
+    }
+    .preview-figure img,
+    .preview-figure video {
+      width: 100%;
+      display: block;
+      max-height: 380px;
+      object-fit: contain;
+      background: #0c1018;
+    }
+    .placeholder {
+      padding: 18px;
+      text-align: center;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .placeholder strong { color: var(--text); display: block; margin-bottom: 6px; }
+    .locked {
+      opacity: 0.65;
+      pointer-events: none;
+    }
+    .locked-note {
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.02);
+    }
     @media (max-width: 1180px) { main { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
     <h1>Cause of Death</h1>
-    <div class="sub">A Python-powered crime-solving prototype — case list, evidence viewer, suspect panel, notes area, accusation screen.</div>
+    <div class="sub">A Python crime-solving prototype — open a case first, then inspect evidence, study suspects, write notes, and accuse.</div>
     <div class="status" id="status">Loading cases…</div>
   </header>
 
@@ -208,34 +246,47 @@ HTML_PAGE = r"""<!doctype html>
       <h2>Case List</h2>
       <div class="content">
         <div class="list" id="caseList"></div>
+
+        <div class="section">
+          <div class="section-title">Case Opening</div>
+          <div class="card" id="openingPanel">
+            <div class="locked-note">Select a case, then click <strong>Open Case</strong> to start the investigation.</div>
+          </div>
+        </div>
       </div>
     </section>
 
     <section class="panel">
       <h2>Investigation Desk</h2>
       <div class="content">
-        <div class="section">
-          <div class="section-title">Case File</div>
-          <div class="card" id="caseFile">Select a case.</div>
-        </div>
+        <div id="deskLocked" class="locked-note">No case is open yet. Choose one from the case list.</div>
 
-        <div class="section grid-2">
-          <div>
-            <div class="section-title">Evidence Viewer</div>
-            <div class="list" id="evidenceList"></div>
+        <div id="deskContent" class="locked" style="display:none;">
+          <div class="section">
+            <div class="section-title">Case File</div>
+            <div class="card" id="caseFile">Open a case to view the file.</div>
           </div>
-          <div>
-            <div class="section-title">Evidence Details</div>
-            <div class="card textblock" id="evidenceDetails">Pick a clue.</div>
-          </div>
-        </div>
 
-        <div class="section">
-          <div class="section-title">Notes Area</div>
-          <textarea id="notes" placeholder="Write down contradictions, timelines, and theories."></textarea>
-          <div class="btnrow" style="margin-top:10px;">
-            <button class="primary" id="saveNotes">Save Notes</button>
-            <button id="clearNotes">Clear Notes</button>
+          <div class="section grid-2">
+            <div>
+              <div class="section-title">Evidence Viewer</div>
+              <div class="list" id="evidenceList"></div>
+            </div>
+            <div>
+              <div class="section-title">Evidence Details</div>
+              <div class="card" id="evidenceDetails">
+                <div class="textblock muted">Pick a clue.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Notes Area</div>
+            <textarea id="notes" placeholder="Write down contradictions, timelines, and theories."></textarea>
+            <div class="btnrow" style="margin-top:10px;">
+              <button class="primary" id="saveNotes">Save Notes</button>
+              <button id="clearNotes">Clear Notes</button>
+            </div>
           </div>
         </div>
       </div>
@@ -244,28 +295,32 @@ HTML_PAGE = r"""<!doctype html>
     <section class="panel">
       <h2>Suspects & Accusation</h2>
       <div class="content">
-        <div class="section">
-          <div class="section-title">Suspect Panel</div>
-          <div class="list" id="suspectList"></div>
-          <div class="card textblock section" id="suspectDetails">Choose a suspect.</div>
-        </div>
+        <div id="rightLocked" class="locked-note">Open a case to reveal the suspect panel and accusation screen.</div>
 
-        <div class="section">
-          <div class="section-title">Accusation Screen</div>
-          <div class="card">
-            <div class="small">Suspect</div>
-            <select id="accSuspect"></select>
-            <div class="small" style="margin-top:10px;">Method</div>
-            <select id="accMethod"></select>
-            <div class="small" style="margin-top:10px;">Motive</div>
-            <select id="accMotive"></select>
-            <div class="small" style="margin-top:10px;">Key evidence</div>
-            <select id="accEvidence"></select>
-            <div class="btnrow" style="margin-top:12px;">
-              <button class="primary" id="submitAccusation">Submit Accusation</button>
-              <button id="resetTheory">Reset Theory</button>
+        <div id="rightContent" class="locked" style="display:none;">
+          <div class="section">
+            <div class="section-title">Suspect Panel</div>
+            <div class="list" id="suspectList"></div>
+            <div class="card textblock section" id="suspectDetails">Choose a suspect.</div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Accusation Screen</div>
+            <div class="card">
+              <div class="small">Suspect</div>
+              <select id="accSuspect"></select>
+              <div class="small" style="margin-top:10px;">Method</div>
+              <select id="accMethod"></select>
+              <div class="small" style="margin-top:10px;">Motive</div>
+              <select id="accMotive"></select>
+              <div class="small" style="margin-top:10px;">Key evidence</div>
+              <select id="accEvidence"></select>
+              <div class="btnrow" style="margin-top:12px;">
+                <button class="primary" id="submitAccusation">Submit Accusation</button>
+                <button id="resetTheory">Reset Theory</button>
+              </div>
+              <div class="message" id="accMessage">Choose your final theory and submit it here.</div>
             </div>
-            <div class="message" id="accMessage">Choose your final theory and submit it here.</div>
           </div>
         </div>
       </div>
@@ -275,6 +330,7 @@ HTML_PAGE = r"""<!doctype html>
   <script>
     const state = {
       cases: [],
+      selectedCaseId: null,
       currentCase: null,
       currentEvidence: null,
       currentSuspect: null,
@@ -282,6 +338,9 @@ HTML_PAGE = r"""<!doctype html>
 
     const el = (id) => document.getElementById(id);
     const caseList = el('caseList');
+    const openingPanel = el('openingPanel');
+    const deskLocked = el('deskLocked');
+    const deskContent = el('deskContent');
     const caseFile = el('caseFile');
     const evidenceList = el('evidenceList');
     const evidenceDetails = el('evidenceDetails');
@@ -289,6 +348,8 @@ HTML_PAGE = r"""<!doctype html>
     const suspectDetails = el('suspectDetails');
     const notes = el('notes');
     const status = el('status');
+    const rightLocked = el('rightLocked');
+    const rightContent = el('rightContent');
     const accSuspect = el('accSuspect');
     const accMethod = el('accMethod');
     const accMotive = el('accMotive');
@@ -312,9 +373,13 @@ HTML_PAGE = r"""<!doctype html>
       return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
     }
 
+    function selectedCase() {
+      return state.cases.find(c => c.id === state.selectedCaseId) || null;
+    }
+
     function renderCaseList() {
       caseList.innerHTML = state.cases.map(c => {
-        const active = state.currentCase && state.currentCase.id === c.id ? 'active' : '';
+        const active = state.selectedCaseId === c.id ? 'active' : '';
         const badge = c.solved ? '<span class="badge solved">Solved</span>' : '<span class="badge open">Open</span>';
         return `
           <div class="case-item ${active}" data-id="${escapeHtml(c.id)}">
@@ -325,8 +390,37 @@ HTML_PAGE = r"""<!doctype html>
         `;
       }).join('');
       caseList.querySelectorAll('.case-item').forEach(node => {
-        node.addEventListener('click', () => loadCase(node.dataset.id));
+        node.addEventListener('click', () => selectCase(node.dataset.id));
       });
+    }
+
+    function renderOpeningPanel() {
+      const c = selectedCase();
+      if (!c) {
+        openingPanel.innerHTML = '<div class="locked-note">No case selected.</div>';
+        return;
+      }
+      const opened = state.currentCase && state.currentCase.id === c.id;
+      openingPanel.innerHTML = `
+        <div class="case-title">${escapeHtml(c.title)}</div>
+        <div class="case-meta">Victim: ${escapeHtml(c.victim.name)} — ${escapeHtml(c.victim.occupation)}</div>
+        <div class="case-meta">Location: ${escapeHtml(c.location)}</div>
+        <div class="case-meta" style="margin-top:10px;">${escapeHtml(c.status || 'Open')}</div>
+        <div class="btnrow" style="margin-top:12px;">
+          <button class="primary" id="openCaseBtn">${opened ? 'Resume Case' : 'Open Case'}</button>
+        </div>
+        <div class="small" style="margin-top:10px;">Select first, then open. That keeps the investigation flow deliberate.</div>
+      `;
+      el('openCaseBtn').addEventListener('click', () => openSelectedCase());
+    }
+
+    function showDesk(open) {
+      deskLocked.style.display = open ? 'none' : 'block';
+      deskContent.style.display = open ? 'block' : 'none';
+      rightLocked.style.display = open ? 'none' : 'block';
+      rightContent.style.display = open ? 'block' : 'none';
+      deskContent.classList.toggle('locked', !open);
+      rightContent.classList.toggle('locked', !open);
     }
 
     function renderCaseFile(c) {
@@ -348,38 +442,110 @@ HTML_PAGE = r"""<!doctype html>
       `;
     }
 
-    function renderEvidence(c) {
+    function renderEvidenceList(c) {
       evidenceList.innerHTML = c.evidence.map((e, idx) => {
         const active = state.currentEvidence && state.currentEvidence.id === e.id ? 'active' : (!state.currentEvidence && idx === 0 ? 'active' : '');
+        const media = e.media_hint ? e.media_hint : 'no media file';
         return `
           <div class="evidence-item ${active}" data-id="${escapeHtml(e.id)}">
             <div class="case-title">${escapeHtml(e.title)}</div>
-            <div class="case-meta">${escapeHtml(e.type)} — ${escapeHtml(e.media_hint || 'no media file')}</div>
+            <div class="case-meta">${escapeHtml(e.type)} — ${escapeHtml(media)}</div>
           </div>
         `;
       }).join('');
       evidenceList.querySelectorAll('.evidence-item').forEach(node => {
         node.addEventListener('click', () => selectEvidence(node.dataset.id));
       });
-      if (!state.currentEvidence && c.evidence.length) selectEvidence(c.evidence[0].id, true);
+    }
+
+    function previewMarkup(e) {
+      const shell = document.createElement('div');
+      shell.className = 'preview-shell';
+      const tag = document.createElement('div');
+      tag.className = 'preview-tag';
+      tag.textContent = e.type.toUpperCase();
+      shell.appendChild(tag);
+      const figure = document.createElement('div');
+      figure.className = 'preview-figure';
+      const hint = e.media_hint ? `/${e.media_hint}` : '';
+
+      if (e.type === 'photo') {
+        if (hint) {
+          const img = document.createElement('img');
+          img.alt = e.title;
+          img.src = hint;
+          img.addEventListener('error', () => {
+            figure.innerHTML = `<div class="placeholder"><strong>Image preview unavailable</strong>The file <code>${escapeHtml(e.media_hint)}</code> is not present yet. Use this slot for the real crime-scene image later.</div>`;
+          });
+          figure.appendChild(img);
+        } else {
+          figure.innerHTML = `<div class="placeholder"><strong>No photo attached</strong>This case does not yet have an image asset.</div>`;
+        }
+      } else if (e.type === 'audio') {
+        if (hint) {
+          const audio = document.createElement('audio');
+          audio.controls = true;
+          audio.preload = 'none';
+          audio.src = hint;
+          audio.style.width = '100%';
+          audio.addEventListener('error', () => {
+            figure.innerHTML = `<div class="placeholder"><strong>Audio preview unavailable</strong>The file <code>${escapeHtml(e.media_hint)}</code> is not present yet. Add the clip later and this player will work.</div>`;
+          });
+          figure.style.padding = '14px';
+          figure.style.display = 'block';
+          figure.appendChild(audio);
+        } else {
+          figure.innerHTML = `<div class="placeholder"><strong>No audio attached</strong>This case does not yet have a recording.</div>`;
+        }
+      } else if (e.type === 'video') {
+        if (hint) {
+          const video = document.createElement('video');
+          video.controls = true;
+          video.preload = 'none';
+          video.src = hint;
+          video.addEventListener('error', () => {
+            figure.innerHTML = `<div class="placeholder"><strong>Video preview unavailable</strong>The file <code>${escapeHtml(e.media_hint)}</code> is not present yet. Add the clip later and this player will work.</div>`;
+          });
+          figure.appendChild(video);
+        } else {
+          figure.innerHTML = `<div class="placeholder"><strong>No video attached</strong>This case does not yet have a clip.</div>`;
+        }
+      } else {
+        figure.innerHTML = `<div class="placeholder"><strong>Document / transcript evidence</strong>Use the summary and details below to inspect the clue.</div>`;
+      }
+
+      shell.appendChild(figure);
+      return shell;
     }
 
     function renderEvidenceDetails(e) {
-      evidenceDetails.innerHTML = `
+      evidenceDetails.innerHTML = '';
+      const top = document.createElement('div');
+      top.innerHTML = `
         <div class="kv">Title<strong>${escapeHtml(e.title)}</strong></div>
         <div class="grid-2" style="margin-top:10px;">
           <div class="kv">Type<strong>${escapeHtml(e.type)}</strong></div>
           <div class="kv">Media<strong>${escapeHtml(e.media_hint || 'N/A')}</strong></div>
         </div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Summary</div>
-          <div class="textblock">${escapeHtml(e.summary)}</div>
-        </div>
-        <div class="section">
-          <div class="section-title" style="margin:12px 0 6px;">Details</div>
-          <div class="textblock">${escapeHtml(e.details)}</div>
-        </div>
       `;
+      evidenceDetails.appendChild(top);
+      evidenceDetails.appendChild(previewMarkup(e));
+
+      const summary = document.createElement('div');
+      summary.className = 'section';
+      summary.innerHTML = `
+        <div class="section-title" style="margin:12px 0 6px;">Summary</div>
+        <div class="textblock">${escapeHtml(e.summary)}</div>
+      `;
+      evidenceDetails.appendChild(summary);
+
+      const details = document.createElement('div');
+      details.className = 'section';
+      details.innerHTML = `
+        <div class="section-title" style="margin:12px 0 6px;">Details</div>
+        <div class="textblock">${escapeHtml(e.details)}</div>
+      `;
+      evidenceDetails.appendChild(details);
     }
 
     function renderSuspects(c) {
@@ -393,9 +559,8 @@ HTML_PAGE = r"""<!doctype html>
         `;
       }).join('');
       suspectList.querySelectorAll('.suspect-item').forEach(node => {
-        node.addEventListener('click', () => selectSuspect(node.dataset.name, true));
+        node.addEventListener('click', () => selectSuspect(node.dataset.name));
       });
-      if (!state.currentSuspect && c.suspects.length) selectSuspect(c.suspects[0].name, true);
     }
 
     function renderSuspectDetails(s) {
@@ -436,56 +601,77 @@ HTML_PAGE = r"""<!doctype html>
       accMethod.value = '';
       accMotive.value = '';
       accEvidence.value = '';
-      if (showMessage) accMessage.className = 'message';
-      if (showMessage) accMessage.textContent = 'Choose your final theory and submit it here.';
-    }
-
-    function updateNotesFromState(c) {
-      notes.value = c.notes || '';
+      if (showMessage) {
+        accMessage.className = 'message';
+        accMessage.textContent = 'Choose your final theory and submit it here.';
+      }
     }
 
     async function saveNotes() {
       if (!state.currentCase) return;
-      const body = { notes: notes.value };
-      await fetch(`/api/cases/${encodeURIComponent(state.currentCase.id)}/notes`, {
+      const response = await fetch(`/api/cases/${encodeURIComponent(state.currentCase.id)}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ notes: notes.value }),
       });
+      const result = await response.json();
+      state.currentCase.notes = result.notes || notes.value;
       setStatus(`Saved notes for ${state.currentCase.title}.`);
     }
 
-    async function selectEvidence(id, silent = false) {
+    async function selectEvidence(id) {
       if (!state.currentCase) return;
       state.currentEvidence = state.currentCase.evidence.find(e => e.id === id) || state.currentCase.evidence[0];
-      renderEvidence(state.currentCase);
+      renderEvidenceList(state.currentCase);
       renderEvidenceDetails(state.currentEvidence);
-      if (!silent) setStatus(`Viewing evidence: ${state.currentEvidence.title}`);
+      setStatus(`Viewing evidence: ${state.currentEvidence.title}`);
     }
 
-    async function selectSuspect(name, silent = false) {
+    async function selectSuspect(name) {
       if (!state.currentCase) return;
       state.currentSuspect = state.currentCase.suspects.find(s => s.name === name) || state.currentCase.suspects[0];
       renderSuspects(state.currentCase);
       renderSuspectDetails(state.currentSuspect);
-      if (!silent) setStatus(`Viewing suspect: ${state.currentSuspect.name}`);
+      setStatus(`Viewing suspect: ${state.currentSuspect.name}`);
+    }
+
+    async function selectCase(id) {
+      state.selectedCaseId = id;
+      renderCaseList();
+      renderOpeningPanel();
+      const c = selectedCase();
+      if (c) {
+        setStatus(`Selected case: ${c.title}. Click Open Case to begin.`);
+      }
+    }
+
+    async function openSelectedCase() {
+      const c = selectedCase();
+      if (!c) return;
+      await loadCase(c.id);
     }
 
     async function loadCase(id) {
-      const resp = await fetch(`/api/cases/${encodeURIComponent(id)}`, { headers: { 'Accept': 'application/json' } });
-      const c = await resp.json();
+      const response = await fetch(`/api/cases/${encodeURIComponent(id)}`, { headers: { 'Accept': 'application/json' } });
+      const c = await response.json();
       state.currentCase = c;
+      state.selectedCaseId = c.id;
       state.currentEvidence = c.evidence[0] || null;
       state.currentSuspect = c.suspects[0] || null;
+      localStorage.setItem('cod-selected-case-id', c.id);
+      localStorage.setItem('cod-open-case-id', c.id);
+
       renderCaseList();
+      renderOpeningPanel();
+      showDesk(true);
       renderCaseFile(c);
-      renderEvidence(c);
+      renderEvidenceList(c);
       renderSuspects(c);
       populateAccusation(c);
-      updateNotesFromState(c);
+      notes.value = c.notes || '';
       if (c.evidence[0]) renderEvidenceDetails(c.evidence[0]);
       if (c.suspects[0]) renderSuspectDetails(c.suspects[0]);
-      setStatus(`Case loaded: ${c.title} | Victim: ${c.victim.name} | Status: ${c.solved ? 'Solved' : 'Open'}`);
+      setStatus(`Case opened: ${c.title} | Victim: ${c.victim.name} | Status: ${c.solved ? 'Solved' : 'Open'}`);
     }
 
     async function submitAccusation() {
@@ -496,29 +682,45 @@ HTML_PAGE = r"""<!doctype html>
         motive: accMotive.value,
         evidence: accEvidence.value,
       };
-      const resp = await fetch(`/api/cases/${encodeURIComponent(state.currentCase.id)}/accusation`, {
+      const response = await fetch(`/api/cases/${encodeURIComponent(state.currentCase.id)}/accusation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = await resp.json();
+      const result = await response.json();
       accMessage.className = `message ${result.solved ? 'good' : 'bad'}`;
       accMessage.textContent = result.message;
       if (result.solved) {
+        state.currentCase.solved = true;
+        localStorage.removeItem('cod-open-case-id');
+        renderCaseList();
+        renderOpeningPanel();
         setStatus(`Case solved: ${state.currentCase.title}`);
-        await boot();
       }
     }
 
-    async function boot() {
-      const resp = await fetch('/api/cases', { headers: { 'Accept': 'application/json' } });
-      state.cases = await resp.json();
+    function bootFromStoredSelection() {
+      const stored = localStorage.getItem('cod-selected-case-id');
+      const fallback = state.cases[0]?.id || null;
+      state.selectedCaseId = state.cases.some(c => c.id === stored) ? stored : fallback;
       renderCaseList();
-      if (!state.currentCase && state.cases.length) {
-        await loadCase(state.cases[0].id);
-      } else if (state.currentCase) {
-        await loadCase(state.currentCase.id);
+      renderOpeningPanel();
+      const openId = localStorage.getItem('cod-open-case-id');
+      if (state.cases.some(c => c.id === openId)) {
+        loadCase(openId);
+        return;
       }
+      const c = selectedCase();
+      if (c) {
+        setStatus(`Selected case: ${c.title}. Click Open Case to begin.`);
+      }
+      showDesk(false);
+    }
+
+    async function boot() {
+      const response = await fetch('/api/cases', { headers: { 'Accept': 'application/json' } });
+      state.cases = await response.json();
+      bootFromStoredSelection();
     }
 
     el('saveNotes').addEventListener('click', saveNotes);
@@ -543,7 +745,7 @@ HTML_PAGE = r"""<!doctype html>
 
 
 class CauseOfDeathHandler(BaseHTTPRequestHandler):
-    server_version = "CauseOfDeath/0.2"
+    server_version = "CauseOfDeath/0.3"
 
     def log_message(self, format: str, *args) -> None:
         return
