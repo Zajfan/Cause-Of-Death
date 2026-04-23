@@ -1,0 +1,316 @@
+{
+  "cases": [
+    {
+      "id": "black-orchid-room",
+      "title": "The Black Orchid Room",
+      "status": "Open",
+      "victim": {
+        "name": "Mara Voss",
+        "occupation": "Art dealer"
+      },
+      "location": "Room 214, Halden Hotel",
+      "brief": "Mara Voss was found dead after a private meeting in her hotel room. The door was locked from the inside, the hallway camera skipped one minute, and someone left the room with the victim's keycard.",
+      "scene": "The room contains a half-finished glass of red wine, crushed orchid petals, a forced-open desk drawer, and a missing envelope from the safe. A hotel staff log shows one keycard use that does not match the victim's normal routine.",
+      "methods": ["poison", "strangulation", "staged accident"],
+      "motives": ["inheritance", "blackmail", "jealousy", "cover-up"],
+      "suspects": [
+        {
+          "name": "Nina Vale",
+          "role": "Assistant",
+          "profile": "Mara's assistant who handled travel, payments, and private meetings. She knows the room routine better than the hotel staff.",
+          "alibi": "She says she was downstairs printing invoices when the murder happened, but no one remembers seeing her at the printer long enough to prove it.",
+          "motive": "Inheritance. If Mara changed her will, Nina stood to lose everything she expected to receive.",
+          "relationship": "Trusted employee with full access to schedules, accounts, and hotel arrangements."
+        },
+        {
+          "name": "Adrian Kells",
+          "role": "Business partner",
+          "profile": "Co-owner of Mara's art deals. He argues in public but smiles in private.",
+          "alibi": "He claims he was in the lobby on a call with a collector.",
+          "motive": "Blackmail. Mara had proof he was falsifying provenance documents.",
+          "relationship": "Long-time business partner who benefited from Mara's silence."
+        },
+        {
+          "name": "Theo Grant",
+          "role": "Hotel clerk",
+          "profile": "Night clerk who knows which guests ask for privacy and which ones ask for loopholes.",
+          "alibi": "He says he never left the front desk.",
+          "motive": "Cover-up. He may have helped someone bypass hotel policy.",
+          "relationship": "Only staff member with access to keycard overrides."
+        },
+        {
+          "name": "Dr. Celia Rowe",
+          "role": "Private doctor",
+          "profile": "Mara's physician and long-time friend. She prescribed a mild sedative the week before the murder.",
+          "alibi": "She says she was on a video call with a patient.",
+          "motive": "Jealousy. Mara was planning to expose something she had confided in Celia.",
+          "relationship": "Medical access and knowledge of Mara's prescriptions."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "e1",
+          "type": "photo",
+          "title": "Crime Scene Overview",
+          "summary": "A wide room photo shows the wine glass, the orchid petals, and the open desk drawer.",
+          "details": "The photo places the glass near the bed, the petals by the desk, and a faint drag mark leading toward the bathroom.",
+          "media_hint": "crime_scene_room214.jpg"
+        },
+        {
+          "id": "e2",
+          "type": "document",
+          "title": "Toxicology Report",
+          "summary": "Digitalis traces were found in the wine glass residue.",
+          "details": "The medical examiner notes a fast onset of cardiac failure after ingestion. Digitalis is not part of Mara's normal prescriptions.",
+          "media_hint": "toxicology_report.pdf"
+        },
+        {
+          "id": "e3",
+          "type": "video",
+          "title": "Hallway Camera Clip",
+          "summary": "The footage skips from 8:11 PM to 8:12 PM.",
+          "details": "During the missing minute, the corridor is briefly blank. The staff log shows one keycard override at exactly 8:11 PM.",
+          "media_hint": "hallway_214_clip.mp4"
+        },
+        {
+          "id": "e4",
+          "type": "audio",
+          "title": "Voicemail Transcript",
+          "summary": "Mara's voicemail accuses Nina of touching the accounts.",
+          "details": "Transcript: 'Nina, if you moved the transfer again, we're done. I know what you were hiding in the ledger.'",
+          "media_hint": "voicemail_0810.wav"
+        },
+        {
+          "id": "e5",
+          "type": "text",
+          "title": "Keycard Log",
+          "summary": "A staff key was used to open Room 214 after the victim's final phone call.",
+          "details": "The access record belongs to the hotel desk override and appears only once in the night, which narrows the suspect with hotel access.",
+          "media_hint": "room_214_keycard_log.txt"
+        },
+        {
+          "id": "e6",
+          "type": "document",
+          "title": "Desk Drawer Inventory",
+          "summary": "A signed transfer envelope is missing from the desk drawer.",
+          "details": "The drawer was forced after the victim died, suggesting someone searched for a document rather than random valuables.",
+          "media_hint": "inventory_sheet.pdf"
+        }
+      ],
+      "solution": {
+        "killer": "Nina Vale",
+        "method": "poison",
+        "motive": "inheritance",
+        "key_evidence": "e2"
+      }
+    },
+    {
+      "id": "dead-air-at-studio-nine",
+      "title": "Dead Air at Studio Nine",
+      "status": "Open",
+      "victim": {
+        "name": "Jon Mercer",
+        "occupation": "Talk show host"
+      },
+      "location": "Studio 9, Mercer Broadcast Center",
+      "brief": "Jon Mercer was found dead inside the broadcast booth minutes before the end of a live segment. The mic was still open when the feed cut to silence.",
+      "scene": "The booth has a displaced chair, a cut microphone cable, and a mixer that was adjusted after the last planned ad break. Security footage shows a short gap in the backstage corridor.",
+      "methods": ["strangulation", "poison", "staged suicide"],
+      "motives": ["blackmail", "revenge", "career sabotage", "cover-up"],
+      "suspects": [
+        {
+          "name": "Owen Pike",
+          "role": "Sound engineer",
+          "profile": "He manages levels, filters, and booth access. He can make a recording tell almost any story.",
+          "alibi": "He says he was checking the room mix in the control booth.",
+          "motive": "Blackmail. Jon had a recording that could ruin him.",
+          "relationship": "Only person with unrestricted access to the mic chain and booth routing."
+        },
+        {
+          "name": "Lena Hart",
+          "role": "Producer",
+          "profile": "She keeps the show on air and knows exactly which guests were invited for ratings.",
+          "alibi": "She says she was on a phone call with the sponsor.",
+          "motive": "Career sabotage. Jon threatened to remove her from the show.",
+          "relationship": "The person most likely to benefit from a public scandal."
+        },
+        {
+          "name": "Sera Knox",
+          "role": "Guest singer",
+          "profile": "A performer who was humiliated by Jon during a prior interview.",
+          "alibi": "She says she was warming up in a dressing room.",
+          "motive": "Revenge. Jon insulted her and leaked part of her personal message.",
+          "relationship": "Recent guest who had a reason to confront Jon, but not the booth access."
+        },
+        {
+          "name": "Marcus Vale",
+          "role": "Security guard",
+          "profile": "Responsible for studio doors and corridor cameras.",
+          "alibi": "He says the monitor had a dead spot and he stayed at his post.",
+          "motive": "Cover-up. He may have let someone inside the booth without logging it.",
+          "relationship": "The only guard on the floor when the feed cut."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "e1",
+          "type": "audio",
+          "title": "Dead Air Recording",
+          "summary": "The live feed cuts, then a scrape and a thump are heard before the silence.",
+          "details": "A quiet voice in the background says, 'I told you not to keep that file.' The microphone peaks at the exact moment the cable is cut.",
+          "media_hint": "dead_air_feed.mp3"
+        },
+        {
+          "id": "e2",
+          "type": "video",
+          "title": "Backstage Corridor Clip",
+          "summary": "A camera gap appears just as someone enters the hall with a coil of cable.",
+          "details": "The footage resumes with the same person leaving too quickly to be a normal equipment check. The timing matches the broadcast interruption.",
+          "media_hint": "studio9_backstage.mp4"
+        },
+        {
+          "id": "e3",
+          "type": "document",
+          "title": "Fiber Analysis",
+          "summary": "Fibers on the victim's neck match the studio's spare microphone cable.",
+          "details": "The cable cut pattern suggests it was used as a weapon before being severed from the booth setup.",
+          "media_hint": "fiber_analysis.pdf"
+        },
+        {
+          "id": "e4",
+          "type": "text",
+          "title": "Deleted Message Thread",
+          "summary": "A hidden chat log references a recording the victim refused to hand over.",
+          "details": "The thread ends with: 'If it airs, we're both done.' The sender name is partially obscured but the timing points to the sound engineer.",
+          "media_hint": "message_thread.txt"
+        },
+        {
+          "id": "e5",
+          "type": "photo",
+          "title": "Mixer Position Photo",
+          "summary": "One fader is slid past the usual live setting, causing a brief spike in the feed.",
+          "details": "The photo shows manual adjustment after the show schedule was locked. This makes the audio cut feel staged rather than accidental.",
+          "media_hint": "mixer_position.jpg"
+        },
+        {
+          "id": "e6",
+          "type": "document",
+          "title": "Studio Access Log",
+          "summary": "Owen Pike accessed Studio 9 two minutes before dead air.",
+          "details": "The log is signed with his badge and the corridor camera gap lines up with the same window.",
+          "media_hint": "studio_access.log"
+        }
+      ],
+      "solution": {
+        "killer": "Owen Pike",
+        "method": "strangulation",
+        "motive": "blackmail",
+        "key_evidence": "e3"
+      }
+    },
+    {
+      "id": "frozen-shift",
+      "title": "Frozen Shift",
+      "status": "Open",
+      "victim": {
+        "name": "Elias Wren",
+        "occupation": "Logistics coordinator"
+      },
+      "location": "Cold storage bay, Northline Processing Plant",
+      "brief": "Elias Wren was discovered inside a locked freezer during an overnight inventory shift. The emergency release had been tampered with, but the death occurred before the freeze could be blamed.",
+      "scene": "The bay floor shows a forklift track, a damaged pallet seal, and a maintenance panel left open. Temperature logs indicate the freezer door was opened and closed twice within a short window.",
+      "methods": ["blunt force trauma", "suffocation", "staged accident"],
+      "motives": ["embezzlement", "revenge", "cover-up", "personal grudge"],
+      "suspects": [
+        {
+          "name": "Dana Holt",
+          "role": "Supervisor",
+          "profile": "Runs the overnight shift and controls dispatch approvals.",
+          "alibi": "She says she was in the office reviewing inventory variance reports.",
+          "motive": "Embezzlement. Elias was about to report missing stock tied to her approvals.",
+          "relationship": "Direct manager with authority over the freezer bay schedule."
+        },
+        {
+          "name": "Priya Sen",
+          "role": "Warehouse manager",
+          "profile": "Keeps the floor moving and notices when someone changes a route.",
+          "alibi": "She says she was checking a shipment at the dock.",
+          "motive": "Cover-up. She may have hidden a discrepancy in the manifest.",
+          "relationship": "The person most familiar with the freezer alarm resets."
+        },
+        {
+          "name": "Gabriel Ford",
+          "role": "Driver",
+          "profile": "Delivered the last pallet before the incident and argued with Elias earlier that night.",
+          "alibi": "He says he left the plant after unloading.",
+          "motive": "Revenge. Elias blamed him for a lost shipment.",
+          "relationship": "Had a loud public dispute with the victim two days before the murder."
+        },
+        {
+          "name": "Tessa Bell",
+          "role": "Accountant",
+          "profile": "Tracks invoices, overages, and the paper trail that everyone else tries to avoid.",
+          "alibi": "She says she was reconciling the books from home.",
+          "motive": "Personal grudge. Elias rejected her audit request and threatened to expose her work.",
+          "relationship": "Knows which numbers do and do not fit together."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "e1",
+          "type": "photo",
+          "title": "Freezer Bay Scene Photo",
+          "summary": "The victim's body is near the emergency release panel, with a forklift path across the floor.",
+          "details": "The photo suggests movement after injury rather than a simple accidental lock-in.",
+          "media_hint": "freezer_scene.jpg"
+        },
+        {
+          "id": "e2",
+          "type": "document",
+          "title": "Inventory Audit Sheet",
+          "summary": "Repeated stock losses were approved under Dana Holt's shift credentials.",
+          "details": "The audit shows missing product that was never reported to the plant owner. Elias had marked it for escalation.",
+          "media_hint": "inventory_audit.pdf"
+        },
+        {
+          "id": "e3",
+          "type": "audio",
+          "title": "Dispatch Call Recording",
+          "summary": "A call records Dana telling someone to 'keep Elias out of the bay until the count is clean.'",
+          "details": "The recording includes the freezer alarm being shut off manually a few minutes later.",
+          "media_hint": "dispatch_call.wav"
+        },
+        {
+          "id": "e4",
+          "type": "video",
+          "title": "Forklift Security Clip",
+          "summary": "A forklift passes the freezer bay after the shift change, then reverses without unloading.",
+          "details": "The clip shows a person in a supervisor jacket using the maintenance access door. The motion is too careful to be an accident.",
+          "media_hint": "forklift_clip.mp4"
+        },
+        {
+          "id": "e5",
+          "type": "text",
+          "title": "Maintenance Panel Notes",
+          "summary": "Someone disabled the freezer alarm circuit and reclosed the panel.",
+          "details": "The note is unsigned, but the handoff time matches the exact gap in the temperature log.",
+          "media_hint": "maintenance_notes.txt"
+        },
+        {
+          "id": "e6",
+          "type": "document",
+          "title": "Temperature Log",
+          "summary": "The freezer was opened twice within twelve minutes.",
+          "details": "The first opening likely allowed the killer inside the bay. The second likely helped stage the final scene.",
+          "media_hint": "temperature_log.pdf"
+        }
+      ],
+      "solution": {
+        "killer": "Dana Holt",
+        "method": "staged accident",
+        "motive": "embezzlement",
+        "key_evidence": "e2"
+      }
+    }
+  ]
+}
